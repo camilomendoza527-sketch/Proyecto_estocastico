@@ -1,0 +1,92 @@
+# =============================================================================
+# Configuración única del proyecto HMM 2D/3D.
+# Todo el código (core/, gui/, training/) lee estos valores a través de
+# core/config.py. NO duplicar estos valores en ningún otro archivo.
+# =============================================================================
+
+[alphabet]
+# Clases a reconocer: exactamente las 27 letras minúsculas del español
+# (SPEC §3.3). Sin dígrafos "ch"/"ll" y sin vocales con tilde.
+letters = [
+    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
+    "n", "ñ", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
+]
+
+# Nombre seguro (ASCII) para archivos de letras no ASCII:
+# models/2d_enie.json, data/raw/2d/enie/...
+[alphabet.file_alias]
+"ñ" = "enie"
+
+[features]
+# Número de sectores angulares de la cuantización de dirección (8 o 16).
+K = 16
+# Valores de K que compara training/evaluate.py.
+K_compare = [8, 16]
+# Símbolos de "pluma levantada" (salto entre trazos): → ↑ ← ↓.
+# Alfabeto total de observaciones: |V| = K + n_jump_symbols.
+n_jump_symbols = 4
+# Distancia de remuestreo, en unidades normalizadas
+# (lado mayor de la caja envolvente = 1).
+resample_step = 0.05
+# Ventana (impar) del promedio móvil sobre los puntos crudos. 1 = sin suavizado.
+smoothing_window = 3
+# Tamaño esperado de la letra, en unidades crudas de entrada (px). Es el lado
+# del recuadro guía que muestran la GUI y capture_tool. La escala de
+# normalización es  s = max(ancho, alto, expected_letter_size):
+#   - mientras se dibuja, un trazo parcial pequeño NO se amplía hasta 1, así que
+#     sus símbolos coinciden con el prefijo de la letra completa;
+#   - una letra más grande que el recuadro se normaliza a su propia caja.
+expected_letter_size = 250.0
+# Tamaño angular esperado de la letra sobre la esfera (en radianes, ~40°),
+# usado como piso de la escala angular en tiempo real para FeatureExtractor3D.
+expected_angle_3d = 0.7
+# Radio por defecto de la esfera en el modo 3D.
+sphere_radius = 1.0
+# true si las coordenadas de entrada vienen de pantalla (y crece hacia abajo).
+# Internamente se trabaja con y hacia arriba: el sector 0 es el este (→) y los
+# sectores crecen en sentido antihorario (el norte ↑ es el sector K/4).
+y_axis_down = true
+
+[capture]
+# Convención de trazo obligatoria (README y capture_tool la muestran).
+stroke_convention = [
+    "Primero el cuerpo de la letra; después el punto, la virgulilla o la barra.",
+    "La barra de la t se traza siempre de izquierda a derecha.",
+    "Los dos trazos de la x se trazan siempre de izquierda a derecha.",
+]
+
+[evaluation]
+# Fracciones de la longitud total del trazo (pluma abajo) sobre las que
+# training/evaluate.py mide accuracy con el extractor de tiempo real.
+prefix_fractions = [0.3, 0.5, 0.7, 1.0]
+
+[hmm.states]
+# Número de estados ocultos N por letra (topología izquierda-derecha).
+# Se estima según la cantidad de segmentos de dirección de la letra, en el rango 4–12.
+"a" = 8
+"b" = 7
+"c" = 5
+"d" = 8
+"e" = 6
+"f" = 7
+"g" = 8
+"h" = 7
+"i" = 4
+"j" = 5
+"k" = 8
+"l" = 4
+"m" = 11
+"n" = 7
+"ñ" = 9
+"o" = 6
+"p" = 7
+"q" = 8
+"r" = 5
+"s" = 6
+"t" = 6
+"u" = 7
+"v" = 5
+"w" = 10
+"x" = 6
+"y" = 7
+"z" = 6
