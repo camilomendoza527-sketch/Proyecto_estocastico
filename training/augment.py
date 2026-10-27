@@ -46,8 +46,8 @@ def _arc(
 def canonical_unit_strokes(letter: str) -> list[np.ndarray]:
     """Devuelve la lista de sub-trazos en [0, 1]² (y hacia abajo) de una letra."""
     if letter == "a":
-        loop = _arc(0.45, 0.55, 0.25, 0.25, 40, 395, n=40)
-        stem = _poly([(0.70, 0.30), (0.70, 0.82)])
+        loop = _arc(0.45, 0.56, 0.25, 0.24, 35, 385, n=40)
+        stem = _poly([(0.70, 0.34), (0.70, 0.80), (0.76, 0.82)])
         return [np.vstack([loop, stem])]
     if letter == "b":
         stem = _poly([(0.28, 0.12), (0.28, 0.82)])
@@ -56,9 +56,9 @@ def canonical_unit_strokes(letter: str) -> list[np.ndarray]:
     if letter == "c":
         return [_arc(0.55, 0.55, 0.28, 0.26, 45, 315, n=42)]
     if letter == "d":
-        loop = _arc(0.46, 0.58, 0.22, 0.22, 50, 390, n=36)
-        stem = _poly([(0.68, 0.12), (0.68, 0.82)])
-        return [np.vstack([loop, stem])]
+        loop = _arc(0.46, 0.60, 0.22, 0.20, 50, 390, n=34)
+        up_down = _poly([(0.68, 0.48), (0.68, 0.12), (0.68, 0.84)])
+        return [np.vstack([loop, up_down])]
     if letter == "e":
         bar = _poly([(0.26, 0.55), (0.76, 0.55)])
         curve = _arc(0.51, 0.55, 0.25, 0.25, 0, 315, n=40)
@@ -120,9 +120,10 @@ def canonical_unit_strokes(letter: str) -> list[np.ndarray]:
         belly = _arc(0.48, 0.50, 0.22, 0.20, 140, -140, n=34)
         return [np.vstack([stem, belly])]
     if letter == "q":
-        loop = _arc(0.46, 0.50, 0.22, 0.20, 45, 395, n=34)
-        stem = _poly([(0.68, 0.32), (0.68, 0.90), (0.80, 0.78)])
-        return [np.vstack([loop, stem])]
+        loop = _arc(0.46, 0.36, 0.19, 0.16, 45, 395, n=30)
+        stem = _poly([(0.65, 0.22), (0.65, 0.92)])
+        bar = _poly([(0.48, 0.68), (0.82, 0.68)])
+        return [np.vstack([loop, stem]), bar]
     if letter == "r":
         stem = _poly([(0.34, 0.34), (0.34, 0.82), (0.34, 0.48)])
         arch = _arc(0.54, 0.48, 0.20, 0.15, 180, 30, n=22)
@@ -373,6 +374,52 @@ def load_raw_samples(
     return samples
 
 
+def canonical_stroke_variants(letter: str) -> list[list[np.ndarray]]:
+    """Devuelve las variantes naturales de trazo de una letra para enriquecer el entrenamiento."""
+    base = canonical_unit_strokes(letter)
+    if letter == "a":
+        # Variante 1: 1 trazo con colita manuscrita hacia la derecha (base)
+        # Variante 2: 1 trazo con palo derecho totalmente recto vertical
+        v2 = [
+            np.vstack(
+                [
+                    _arc(0.45, 0.55, 0.25, 0.25, 40, 395, n=40),
+                    _poly([(0.70, 0.30), (0.70, 0.82)]),
+                ]
+            )
+        ]
+        # Variante 3: 1 trazo cerrando a mitad del círculo y bajando con colita suave
+        v3 = [
+            np.vstack(
+                [
+                    _arc(0.45, 0.55, 0.25, 0.24, 35, 360, n=36),
+                    _poly([(0.70, 0.55), (0.70, 0.82), (0.76, 0.79)]),
+                ]
+            )
+        ]
+        # Variante 4: 2 sub-trazos (círculo primero + palo vertical derecho después)
+        v4 = [
+            _arc(0.45, 0.55, 0.25, 0.24, 35, 390, n=38),
+            _poly([(0.70, 0.32), (0.70, 0.82)]),
+        ]
+        return [base, v2, v3, v4]
+    if letter == "d":
+        # Variante 1: 1 trazo subiendo hasta arriba y bajando (base)
+        # Variante 2: 2 sub-trazos (círculo + tallo alto desde arriba)
+        v2 = [
+            _arc(0.46, 0.60, 0.22, 0.20, 45, 390, n=34),
+            _poly([(0.68, 0.12), (0.68, 0.84)]),
+        ]
+        return [base, v2]
+    if letter == "q":
+        # Variante 1: 2 sub-trazos (óvalo + tallo largo + barra horizontal en español)
+        # Variante 2: 1 trazo con tallo largo descendente y quiebre final
+        loop = _arc(0.46, 0.36, 0.19, 0.16, 45, 395, n=30)
+        v2 = [np.vstack([loop, _poly([(0.65, 0.22), (0.65, 0.92), (0.80, 0.78)])])]
+        return [base, v2]
+    return [base]
+
+
 def generate_seed_dataset_2d(
     samples_per_letter: int = 24,
     seed: int = 42,
@@ -392,10 +439,13 @@ def generate_seed_dataset_2d(
             counts[letter] = len(existing)
             continue
 
-        base_strokes = [s * box + offset for s in canonical_unit_strokes(letter)]
+        variants = [
+            [s * box + offset for s in v] for v in canonical_stroke_variants(letter)
+        ]
         to_create = max(0, samples_per_letter - len(existing))
         for i in range(to_create):
-            sample = base_strokes if i == 0 else augment_strokes(base_strokes, rng)
+            base_strokes = variants[i % len(variants)]
+            sample = base_strokes if i < len(variants) else augment_strokes(base_strokes, rng)
             save_raw_sample(
                 letter, sample, mode="2d", base_dir=base_dir, prefix="synth"
             )
@@ -423,19 +473,24 @@ def generate_seed_dataset_3d(
             counts[letter] = len(existing)
             continue
 
-        # Si hay muestras 2D capturadas o generadas, se aprovechan como base; si no, la plantilla
         samples_2d = load_raw_samples(letter, mode="2d", base_dir=base_dir)
-        canonical_2d = [s * box for s in canonical_unit_strokes(letter)]
+        variants_2d = [
+            [s * box for s in v] for v in canonical_stroke_variants(letter)
+        ]
 
         to_create = max(0, samples_per_letter - len(existing))
         for i in range(to_create):
-            if i == 0:
-                src_2d = canonical_2d
+            if i < len(variants_2d):
+                src_2d = variants_2d[i]
                 span = base_span
                 theta_0 = np.pi / 2.0
                 phi_0 = 0.0
             else:
-                base_2d = samples_2d[i % len(samples_2d)] if samples_2d else canonical_2d
+                base_2d = (
+                    samples_2d[i % len(samples_2d)]
+                    if samples_2d
+                    else variants_2d[i % len(variants_2d)]
+                )
                 src_2d = augment_strokes(base_2d, rng)
                 span = float(base_span * rng.uniform(0.85, 1.18))
                 theta_0 = float(np.pi / 2.0 + rng.uniform(-0.18, 0.18))
@@ -453,4 +508,5 @@ def generate_seed_dataset_3d(
             )
         counts[letter] = len(existing) + to_create
     return counts
+
 
