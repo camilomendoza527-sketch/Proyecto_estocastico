@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Presentación Técnica — Reconocedor HMM 2D/3D | Universidad de los Llanos</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --text: #0f172a;
+      --muted: #64748b;
+      --primary: #16a34a;
+      --primary-light: #f0fdf4;
+      --primary-border: #bbf7d0;
+      --accent: #2563eb;
+      --border: #e2e8f0;
+      --code-bg: #f1f5f9;
+      --font-sans: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      --font-mono: 'Fira Code', 'Consolas', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Barra superior de progreso */
+    #progress-bar {
+      height: 4px;
+      background-color: var(--primary);
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+
+    /* Encabezado fijo */
+    header {
+      background: #ffffff;
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+    }
+    .header-title { font-weight: 700; color: #1e293b; display: flex; align-items: center; gap: 8px; }
+    .header-badge {
+      background: var(--primary-light);
+      color: var(--primary);
+      border: 1px solid var(--primary-border);
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .slide-indicator { color: var(--muted); font-weight: 600; }
+
+    /* Contenedor de diapositivas */
+    #deck-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 24px;
+    }
+
+    .slide {
+      position: absolute;
+      top: 24px; bottom: 24px; left: 24px; right: 24px;
+      max-width: 1100px;
+      margin: 0 auto;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05);
+      padding: 36px 48px;
+      display: none;
+      flex-direction: column;
+      overflow-y: auto;
+      animation: fadeIn 0.3s ease-in-out;
+    }
+
+    .slide.active { display: flex; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Tipografía y estilos de contenido */
+    h1 { font-size: 26px; color: #0f172a; margin-bottom: 8px; font-weight: 700; }
+    h2 { font-size: 20px; color: #1e293b; margin-bottom: 16px; font-weight: 600; }
+    h3 { font-size: 16px; color: #334155; margin: 14px 0 6px 0; font-weight: 600; }
+    p { margin-bottom: 12px; font-size: 14px; color: #334155; }
+    ul, ol { margin-left: 20px; margin-bottom: 14px; font-size: 14px; color: #334155; }
+    li { margin-bottom: 6px; }
+
+    /* Variables y código */
+    code, .tech-var {
+      font-family: var(--font-mono);
+      background: var(--code-bg);
+      color: #0f766e;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 13px;
+      font-style: normal;
+    }
+    em, .math-var {
+      font-family: 'Georgia', serif;
+      font-style: italic;
+      color: #1e293b;
+    }
+
+    /* Tablas técnicas */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0;
+      font-size: 13px;
+    }
+    th, td {
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      background: #f8fafc;
+      font-weight: 600;
+      color: #475569;
+    }
+    tr:hover td { background-color: #f8fafc; }
+
+    /* Cajas y alertas */
+    .callout {
+      background: #f0fdf4;
+      border-left: 4px solid var(--primary);
+      padding: 12px 16px;
+      border-radius: 0 8px 8px 0;
+      margin: 12px 0;
+      font-size: 13px;
+      color: #166534;
+    }
+    .callout-blue {
+      background: #eff6ff;
+      border-left: 4px solid var(--accent);
+      color: #1e40af;
+    }
+
+    /* Tarjetas de arquitectura */
+    .grid-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      margin: 14px 0;
+    }
+    .card {
+      background: #ffffff;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    }
+    .card-title { font-weight: 700; font-size: 14px; margin-bottom: 6px; color: #1e293b; }
+    .card-desc { font-size: 12.5px; color: var(--muted); }
+
+    /* Barra inferior de navegación */
+    footer {
+      background: #ffffff;
+      border-top: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .nav-btn {
+      background: #ffffff;
+      border: 1px solid var(--border);
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #334155;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+    .nav-btn:hover:not(:disabled) {
+      background: #f1f5f9;
+      border-color: #cbd5e1;
+    }
+    .nav-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .nav-btn.primary {
+      background: var(--primary);
+      color: #ffffff;
+      border-color: var(--primary);
+    }
+    .nav-btn.primary:hover:not(:disabled) {
+      background: #15803d;
+    }
+
+    .key-hints {
+      font-size: 11px;
+      color: var(--muted);
+      display: flex;
+      gap: 12px;
+    }
+    kbd {
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+
+    /* Diagrama SVG simple */
+    .diagram-box {
+      background: #f8fafc;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin: 12px 0;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Barra de progreso superior -->
+  <div id="progress-bar"></div>
+
+  <!-- Encabezado de la presentación -->
+  <header>
+    <div class="header-title">
+      <span>Reconocedor HMM 2D/3D</span>
+      <span class="header-badge">Procesos Estocásticos</span>
+    </div>
+    <div class="slide-indicator" id="slide-num">1 / 11</div>
+  </header>
+
+  <!-- Contenedor de Diapositivas -->
+  <main id="deck-container">
+
+    <!-- Diapositiva 1: Portada -->
+    <div class="slide active">
+      <div style="text-align: center; margin: auto 0;">
+        <span class="header-badge" style="font-size: 13px; padding: 4px 12px; margin-bottom: 12px; display: inline-block;">Proyecto Final de Grado / Curso</span>
+        <h1 style="font-size: 32px; margin: 12px 0;">Reconocedor Continuo de Letras Manuscritas en 2D y 3D</h1>
+        <h2 style="font-size: 18px; color: var(--muted); font-weight: 400; margin-bottom: 24px;">Modelado Espaciotemporal con Modelos Ocultos de Markov (<em>HMM</em>) y Topología Bakis</h2>
+        
+        <div style="background: #f8fafc; border: 1px solid var(--border); border-radius: 12px; display: inline-block; padding: 20px 36px; text-align: left; font-size: 13.5px;">
+          <p style="margin-bottom: 6px;"><strong>Institución:</strong> Universidad de los Llanos</p>
+          <p style="margin-bottom: 6px;"><strong>Facultad:</strong> Facultad de Ciencias Básicas e Ingeniería</p>
+          <p style="margin-bottom: 6px;"><strong>Asignatura:</strong> Procesos Estocásticos</p>
+          <p style="margin-bottom: 6px;"><strong>Autor:</strong> Camilo Mendoza (<code>camilomendoza527-sketch</code>)</p>
+          <p style="margin-bottom: 0;"><strong>Repositorio:</strong> <a href="https://github.com/camilomendoza527-sketch/Proyecto_estocastico" target="_blank" style="color: var(--accent); text-decoration: none;">github.com/camilomendoza527-sketch/Proyecto_estocastico</a></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Diapositiva 2: Resumen y Objetivos -->
+    <div class="slide">
+      <h1>Resumen Ejecutivo y Objetivos del Proyecto</h1>
+      <p class="callout">
+        <strong>Objetivo Central:</strong> Clasificar en tiempo real trazos manuscritos en dos dominios geométricos: el plano euclidiano <span class="math-var">ℝ²</span> y la superficie de la esfera tridimensional <span class="math-var">S²</span>, evaluando probabilidades posteriores <span class="math-var">P(c | O<sub>1:t</sub>)</span> y proyectando los trazos futuros más probables.
+      </p>
+
+      <div class="grid-cards">
+        <div class="card">
+          <div class="card-title">1. Clasificación Multiclase 27 Letras</div>
+          <div class="card-desc">Soporte completo del alfabeto español (<code>a..z</code> + <code>ñ</code>) mediante 54 modelos HMM discretos independientes (27 en 2D y 27 en 3D).</div>
+        </div>
+        <div class="card">
+          <div class="card-title">2. Invariancias Matemáticas</div>
+          <div class="card-desc">Invariancia estricta a la escala espacial del dibujo, la velocidad de ejecución y la orientación de la cámara sobre la esfera.</div>
+        </div>
+        <div class="card">
+          <div class="card-title">3. Inferencia y Proyección en Tiempo Real</div>
+          <div class="card-desc">Cálculo incremental en <span class="math-var">O(N²)</span> por punto nuevo mediante el algoritmo <em>Forward</em> y decodificación de estados futuros con <em>Viterbi</em>.</div>
+        </div>
+        <div class="card">
+          <div class="card-title">4. Guía Caligráfica Interactiva</div>
+          <div class="card-desc">Animación a 60 FPS con renglón escolar, puntero luminoso con flecha direccional, líneas de vuelo aéreo y controles de reproducción.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Diapositiva 3: Arquitectura Limpia -->
+    <div class="slide">
+      <h1>Arquitectura Limpia (Clean Architecture)</h1>
+      <p>El código está estrictamente desacoplado en 4 capas concéntricas con regla de dependencia unidireccional:</p>
+
+      <div class="diagram-box">
+        <svg width="680" height="180" viewBox="0 0 680 180" fill="none">
+          <rect x="10" y="20" width="140" height="140" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+          <text x="80" y="55" text-anchor="middle" font-weight="700" font-size="13" fill="#166534">1. GUI (Qt/PySide6)</text>
+          <text x="80" y="80" text-anchor="middle" font-size="11" fill="#334155">main.py</text>
+          <text x="80" y="100" text-anchor="middle" font-size="11" fill="#334155">gui/View2D.py</text>
+          <text x="80" y="120" text-anchor="middle" font-size="11" fill="#334155">gui/View3D.py</text>
+          <text x="80" y="140" text-anchor="middle" font-size="11" fill="#334155">gui/LetterGuide.py</text>
+
+          <path d="M 150 90 L 180 90" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+
+          <rect x="180" y="20" width="150" height="140" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+          <text x="255" y="55" text-anchor="middle" font-weight="700" font-size="13" fill="#1e40af">2. Core Algorítmico</text>
+          <text x="255" y="80" text-anchor="middle" font-size="11" fill="#334155">core/HMMEngine.py</text>
+          <text x="255" y="100" text-anchor="middle" font-size="11" fill="#334155">core/FeatureExtractor.py</text>
+          <text x="255" y="120" text-anchor="middle" font-size="11" fill="#334155">core/topology.py</text>
+          <text x="255" y="140" text-anchor="middle" font-size="11" fill="#334155">core/config.py</text>
+
+          <path d="M 330 90 L 360 90" stroke="#94a3b8" stroke-width="2"/>
+
+          <rect x="360" y="20" width="140" height="140" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+          <text x="430" y="55" text-anchor="middle" font-weight="700" font-size="13" fill="#92400e">3. Entrenamiento</text>
+          <text x="430" y="85" text-anchor="middle" font-size="11" fill="#334155">training/train.py</text>
+          <text x="430" y="110" text-anchor="middle" font-size="11" fill="#334155">training/augment.py</text>
+          <text x="430" y="135" text-anchor="middle" font-size="11" fill="#334155">training/evaluate.py</text>
+
+          <path d="M 500 90 L 530 90" stroke="#94a3b8" stroke-width="2"/>
+
+          <rect x="530" y="20" width="140" height="140" rx="10" fill="#f3e8ff" stroke="#7e22ce" stroke-width="2"/>
+          <text x="600" y="55" text-anchor="middle" font-weight="700" font-size="13" fill="#6b21a8">4. Datos y Modelos</text>
+          <text x="600" y="85" text-anchor="middle" font-size="11" fill="#334155">data/letras/*.json</text>
+          <text x="600" y="110" text-anchor="middle" font-size="11" fill="#334155">data/canonical_glyphs.json</text>
+          <text x="600" y="135" text-anchor="middle" font-size="11" fill="#334155">models/*.json</text>
+        </svg>
+      </div>
+
+      <ul>
+        <li><strong>Aislamiento estricto:</strong> El motor <code>core/</code> no contiene dependencias de interfaz gráfica ni imports de Qt.</li>
+        <li><strong>Serialización estándar:</strong> Modelos y datos se persisten en formato JSON independiente de la plataforma.</li>
+      </ul>
+    </div>
+
+    <!-- Diapositiva 4: Estructura de Carpetas -->
+    <div class="slide">
+      <h1>Estructura de Directorios del Repositorio</h1>
+      <table>
+        <thead>
+          <tr>
+            <th>Carpeta</th>
+            <th>Contenido Técnico</th>
+            <th>Archivos Principales</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>core/</code></td>
+            <td>Matemática pura de cadenas de Markov, Forward, Backward, Viterbi, Baum-Welch y extracción de ángulos.</td>
+            <td><code>HMMEngine.py</code>, <code>FeatureExtractor.py</code>, <code>topology.py</code></td>
+          </tr>
+          <tr>
+            <td><code>gui/</code></td>
+            <td>Widgets de PySide6, lienzos con trazado OpenGL/QPainter, ranking de probabilidades y guía animada.</td>
+            <td><code>MainMenu.py</code>, <code>View2D.py</code>, <code>View3D.py</code>, <code>RankingPanel.py</code>, <code>LetterGuide.py</code></td>
+          </tr>
+          <tr>
+            <td><code>training/</code></td>
+            <td>Pipeline de aumento de datos, carga de dataset humano y ajuste estocástico de modelos.</td>
+            <td><code>train.py</code>, <code>augment.py</code>, <code>evaluate.py</code></td>
+          </tr>
+          <tr>
+            <td><code>data/</code></td>
+            <td>Dataset maestro (5.500+ muestras), archivos individuales por letra y plantillas canónicas.</td>
+            <td><code>glifo-dataset-2026-11-06.json</code>, <code>letras/*.json</code> (27 archivos)</td>
+          </tr>
+          <tr>
+            <td><code>models/</code></td>
+            <td>54 archivos JSON con los parámetros aprendidos <span class="math-var">λ = (A, B, π)</span> para 2D y 3D.</td>
+            <td><code>2d_a.json</code> .. <code>2d_z.json</code>, <code>3d_a.json</code> .. <code>3d_z.json</code></td>
+          </tr>
+          <tr>
+            <td><code>tests/</code></td>
+            <td>Batería completa de 39 pruebas unitarias automatizadas con <code>pytest</code>.</td>
+            <td><code>test_hmm_engine.py</code>, <code>test_gui.py</code>, <code>test_feature_extractor.py</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Diapositiva 5: Ubicación de los Algoritmos -->
+    <div class="slide">
+      <h1>Ubicación de Algoritmos y Variables Técnicas</h1>
+      <table>
+        <thead>
+          <tr>
+            <th>Algoritmo</th>
+            <th>Archivo y Función</th>
+            <th>Variables Matemáticas en Código</th>
+            <th>Complejidad</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Forward Step</strong></td>
+            <td><code>core/HMMEngine.py</code><br><code>forward_step()</code></td>
+            <td><span class="math-var">α<sub>t+1</sub>(j)</span> = [∑ <span class="math-var">α<sub>t</sub>(i) a<sub>ij</sub></span>] · <span class="math-var">b<sub>j</sub>(O<sub>t+1</sub>)</span>, escala <span class="math-var">c<sub>t</sub></span></td>
+            <td><span class="math-var">O(N²)</span></td>
+          </tr>
+          <tr>
+            <td><strong>Backward</strong></td>
+            <td><code>core/HMMEngine.py</code><br><code>backward()</code></td>
+            <td><span class="math-var">β<sub>t</sub>(i)</span> = ∑ <span class="math-var">a<sub>ij</sub> b<sub>j</sub>(O<sub>t+1</sub>) β<sub>t+1</sub>(j) · c<sub>t</sub></span></td>
+            <td><span class="math-var">O(N² T)</span></td>
+          </tr>
+          <tr>
+            <td><strong>Viterbi</strong></td>
+            <td><code>core/HMMEngine.py</code><br><code>viterbi()</code></td>
+            <td><span class="math-var">δ<sub>t</sub>(j)</span> = max<sub>i</sub> [<span class="math-var">δ<sub>t-1</sub>(i)</span> + log <span class="math-var">a<sub>ij</sub></span>] + log <span class="math-var">b<sub>j</sub>(O<sub>t</sub>)</span></td>
+            <td><span class="math-var">O(N² T)</span></td>
+          </tr>
+          <tr>
+            <td><strong>Baum-Welch (EM)</strong></td>
+            <td><code>core/HMMEngine.py</code><br><code>fit_baum_welch()</code></td>
+            <td><span class="math-var">ξ<sub>t</sub>(i,j)</span> (transición conjunta), <span class="math-var">γ<sub>t</sub>(i)</span> (ocupación estado)</td>
+            <td><span class="math-var">O(I · R · N² T)</span></td>
+          </tr>
+          <tr>
+            <td><strong>Clasificación Bayes</strong></td>
+            <td><code>core/HMMEngine.py</code><br><code>classify()</code></td>
+            <td><span class="math-var">P(c | O)</span> normalizada con <em>Log-Sum-Exp</em></td>
+            <td><span class="math-var">O(|C| · N² T)</span></td>
+          </tr>
+          <tr>
+            <td><strong>Extracción 2D / 3D</strong></td>
+            <td><code>core/FeatureExtractor.py</code></td>
+            <td>Resampleo geodésico <span class="math-var">Δs</span>, rumbo ortodrómico <span class="math-var">ψ</span>, cuantización <span class="math-var">K=16</span></td>
+            <td><span class="math-var">O(P)</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Diapositiva 6: Modelado Estocástico y Bakis -->
+    <div class="slide">
+      <h1>Modelado Estocástico y Topología Bakis</h1>
+      <p>Cada letra <span class="math-var">c</span> cuenta con un modelo HMM discreto <span class="math-var">λ<sub>c</sub> = (A<sub>c</sub>, B<sub>c</sub>, π<sub>c</sub>)</span>:</p>
+
+      <div class="diagram-box">
+        <svg width="600" height="110" viewBox="0 0 600 110" fill="none">
+          <circle cx="80" cy="55" r="28" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+          <text x="80" y="60" text-anchor="middle" font-weight="700" font-size="14" fill="#166534">S₀</text>
+
+          <circle cx="240" cy="55" r="28" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+          <text x="240" y="60" text-anchor="middle" font-weight="700" font-size="14" fill="#334155">S₁</text>
+
+          <circle cx="400" cy="55" r="28" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+          <text x="400" y="60" text-anchor="middle" font-weight="700" font-size="14" fill="#334155">S₂</text>
+
+          <circle cx="530" cy="55" r="28" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/>
+          <text x="530" y="60" text-anchor="middle" font-weight="700" font-size="14" fill="#991b1b">S<sub>N-1</sub></text>
+
+          <!-- Flechas -->
+          <path d="M 70 27 C 70 5, 90 5, 90 27" stroke="#16a34a" stroke-width="2" fill="none"/>
+          <text x="80" y="15" text-anchor="middle" font-size="10" fill="#166534">a₀₀</text>
+
+          <path d="M 108 55 L 212 55" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+          <text x="160" y="48" text-anchor="middle" font-size="11" fill="#334155">a₀₁</text>
+
+          <path d="M 98 32 C 160 0, 320 0, 382 32" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3,3" fill="none"/>
+          <text x="240" y="14" text-anchor="middle" font-size="10" fill="#2563eb">salto a₀₂</text>
+        </svg>
+      </div>
+
+      <ul>
+        <li><strong>Restricción Izquierda-Derecha:</strong> <span class="math-var">a<sub>ij</sub> = 0</span> para todo <span class="math-var">j &lt; i</span> o <span class="math-var">j &gt; i + 2</span>. El trazo avanza temporalmente sin retroceder.</li>
+        <li><strong>Alfabeto Discreto:</strong> <span class="math-var">M = K + 4 = 20</span> símbolos (16 direcciones con pluma abajo + 4 saltos con pluma levantada).</li>
+        <li><strong>Suavizado de Laplace:</strong> Evita probabilidades cero (<span class="math-var">b<sub>j</sub>(k) &gt; 0</span>), asegurando estabilidad numérica.</li>
+      </ul>
+    </div>
+
+    <!-- Diapositiva 7: Geometría 2D vs 3D -->
+    <div class="slide">
+      <h1>Geometría 2D vs. Geometría Esférica 3D</h1>
+      <div class="grid-cards">
+        <div class="card" style="border-top: 4px solid #16a34a;">
+          <div class="card-title">Modo 2D: Plano Euclidiano ℝ²</div>
+          <ul>
+            <li><strong>Inversión de eje Y:</strong> <span class="math-var">y ← -y</span> para mapear pantalla a plano cartesiano estándar.</li>
+            <li><strong>Normalización espacial:</strong> Escalamiento uniforme por caja envolvente <span class="math-var">s = max(w, h, s<sub>esp</sub>)</span>.</li>
+            <li><strong>Suavizado móvil:</strong> Promedio simétrico de 3 puntos con bordes fijos.</li>
+            <li><strong>Ángulo plano:</strong> <span class="math-var">θ = atan2(Δy, Δx)</span> cuantizado en <span class="math-var">K=16</span> sectores de 22.5°.</li>
+          </ul>
+        </div>
+
+        <div class="card" style="border-top: 4px solid #2563eb;">
+          <div class="card-title">Modo 3D: Esfera Unitaria S² ⊂ ℝ³</div>
+          <ul>
+            <li><strong>Captura por Raycasting:</strong> Proyección del ratón a la superficie esférica <span class="math-var">||p|| = R</span>.</li>
+            <li><strong>Geodésica:</strong> Distancia ortodrómica <span class="math-var">d = R · arccos(p₁ · p₂)</span>.</li>
+            <li><strong>Rumbo esférico:</strong> <em>Great-circle bearing</em> invariante al marco de rotación de la cámara.</li>
+            <li><strong>Apertura angular:</strong> <span class="math-var">α = 1.57 rad (≈ π/2)</span> cubriendo el diámetro frontal completo (<span class="math-var">2R</span>).</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Diapositiva 8: Pipeline de Entrenamiento -->
+    <div class="slide">
+      <h1>Pipeline de Entrenamiento y Dataset Humano</h1>
+      <p class="callout callout-blue">
+        <strong>Dataset Humano Real:</strong> Se adoptó y particionó <code>data/glifo-dataset-2026-11-06.json</code> con <strong>5.500+ muestras manuscritas</strong> distribuidas en 27 archivos individuales <code>data/letras/*.json</code>.
+      </p>
+
+      <div class="grid-cards">
+        <div class="card">
+          <div class="card-title">1. Aumento de Datos (augment.py)</div>
+          <div class="card-desc">Perturbaciones controladas de rotación (±12°), ligera variación de escala y ruido gaussiano para dotar de robustez a los modelos.</div>
+        </div>
+        <div class="card">
+          <div class="card-title">2. Inicialización Segmentaria Bakis</div>
+          <div class="card-desc">División uniforme de la trayectoria para romper la simetría inicial de Baum-Welch y converger a soluciones óptimas globales.</div>
+        </div>
+        <div class="card">
+          <div class="card-title">3. Resolución 'a' vs. 'q'</div>
+          <div class="card-desc">El entrenamiento con trazos reales diferenció el vástago vertical descendente de la <code>q</code> del cierre curvo de la <code>a</code> (100% acierto).</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Diapositiva 9: Interfaz Gráfica y Guía -->
+    <div class="slide">
+      <h1>Interfaz Gráfica y Guía Caligráfica Animada</h1>
+      <p>Desarrollada en PySide6 conforme a los estándares de experiencia de usuario:</p>
+
+      <ul>
+        <li><strong>Barra lateral fija:</strong> Navegación tipo pastilla en verde suave entre <em>Inicio</em>, <em>Modo 2D</em>, <em>Modo 3D</em> y <em>Guía de letras</em>.</li>
+        <li><strong>Lienzos de dibujo limpios:</strong> Retícula con cruz central tenue, marca de agua indicativa y soporte de dibujo continuo con ratón.</li>
+        <li><strong>Panel de ranking en tiempo real:</strong> Presenta la letra más probable en cabecera grande, glifo vectorial con punto verde de inicio, barra de porcentaje y probabilidad posterior.</li>
+        <li><strong>Animación Caligráfica a 60 FPS:</strong>
+          <ul>
+            <li>Dibuja automáticamente el trazo canónico de cada una de las 27 letras en color verde esmeralda.</li>
+            <li>Puntero luminoso con flecha direccional que indica el sentido de la mano.</li>
+            <li>Líneas punteadas de vuelo aéreo en letras multi-trazo (<code>i</code>, <code>j</code>, <code>ñ</code>, <code>t</code>, <code>x</code>).</li>
+            <li>Controles integrados: <code>[⏸ Pausar / ▶ Reanudar]</code>, selector de velocidad (0.5x, 1x, 1.5x) y reinicio.</li>
+          </ul>
+        </li>
+      </ul>
+    </div>
+
+    <!-- Diapositiva 10: Pruebas y Resultados -->
+    <div class="slide">
+      <h1>Resultados Experimentales y Verificación</h1>
+      <div class="callout" style="font-size: 14px;">
+        <strong>Resultado de la Suite de Pruebas:</strong> 39 de 39 pruebas unitarias aprobadas (<strong>100% PASSED</strong>) en <code>pytest</code>.
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Módulo de Pruebas</th>
+            <th>Propiedades Verificadas</th>
+            <th>Estado</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>tests/test_hmm_engine.py</code></td>
+            <td>Estocasticidad de matrices (<span class="math-var">∑ a<sub>ij</sub> = 1</span>), Forward, Backward, Viterbi manual y Baum-Welch.</td>
+            <td><strong style="color: #16a34a;">9 PASSED</strong></td>
+          </tr>
+          <tr>
+            <td><code>tests/test_feature_extractor.py</code></td>
+            <td>Invariancia a escala y velocidad, remuestreo a longitud de arco constante, geodésicas y rumbos 3D.</td>
+            <td><strong style="color: #16a34a;">21 PASSED</strong></td>
+          </tr>
+          <tr>
+            <td><code>tests/test_gui.py</code></td>
+            <td>Navegación entre ventanas, dibujo por ratón en 2D y 3D, animación de guía, controles de pausa y velocidad.</td>
+            <td><strong style="color: #16a34a;">5 PASSED</strong></td>
+          </tr>
+          <tr>
+            <td><code>tests/test_training_pipeline.py</code></td>
+            <td>Plantillas canónicas de las 27 letras, mapeo sobre la esfera 3D y evaluación de prefijos parciales.</td>
+            <td><strong style="color: #16a34a;">4 PASSED</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Diapositiva 11: Conclusiones -->
+    <div class="slide">
+      <h1>Conclusiones y Aportes del Proyecto</h1>
+      <div class="grid-cards">
+        <div class="card" style="border-left: 4px solid #16a34a;">
+          <div class="card-title">Robustez Estocástica</div>
+          <div class="card-desc">Los Modelos Ocultos de Markov discretos con topología Bakis capturan con precisión la dinámica espacio-temporal del trazo humano, manejando variaciones individuales de velocidad y caligrafía.</div>
+        </div>
+        <div class="card" style="border-left: 4px solid #2563eb;">
+          <div class="card-title">Generalización Tridimensional</div>
+          <div class="card-desc">El uso de geometría diferencial sobre la esfera unitaria (<span class="math-var">S²</span>) demuestra que la teoría de cadenas de Markov es aplicable sobre variedades riemannianas mediante rumbos ortodrómicos locales.</div>
+        </div>
+        <div class="card" style="border-left: 4px solid #d97706;">
+          <div class="card-title">Interacción y Usabilidad</div>
+          <div class="card-desc">La guía caligráfica con animación continua y proyección del trazo futuro no solo reconoce lo que el usuario escribe, sino que asiste visualmente en el proceso de trazado.</div>
+        </div>
+      </div>
+
+      <div style="text-align: center; margin-top: 36px;">
+        <h2 style="color: var(--primary); font-size: 22px;">¡Gracias por su atención!</h2>
+        <p style="color: var(--muted); font-size: 13px;">Proyecto disponible para evaluación y reproducción en GitHub</p>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Barra inferior de control -->
+  <footer>
+    <div class="key-hints">
+      <span>Navegación: <kbd>←</kbd> <kbd>→</kbd> o <kbd>Espacio</kbd></span>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button class="nav-btn" id="btn-prev" onclick="prevSlide()">← Anterior</button>
+      <button class="nav-btn primary" id="btn-next" onclick="nextSlide()">Siguiente →</button>
+    </div>
+  </footer>
+
+  <script>
+    const slides = document.querySelectorAll('.slide');
+    const slideNum = document.getElementById('slide-num');
+    const progressBar = document.getElementById('progress-bar');
+    const btnPrev = document.getElementById('btn-prev');
+    const btnNext = document.getElementById('btn-next');
+    let currentIndex = 0;
+
+    function updateSlide(index) {
+      if (index < 0 || index >= slides.length) return;
+      slides[currentIndex].classList.remove('active');
+      currentIndex = index;
+      slides[currentIndex].classList.add('active');
+
+      slideNum.textContent = `${currentIndex + 1} / ${slides.length}`;
+      progressBar.style.width = `${((currentIndex + 1) / slides.length) * 100}%`;
+
+      btnPrev.disabled = (currentIndex === 0);
+      btnNext.disabled = (currentIndex === slides.length - 1);
+      btnNext.textContent = (currentIndex === slides.length - 1) ? 'Final' : 'Siguiente →';
+    }
+
+    function nextSlide() {
+      if (currentIndex < slides.length - 1) updateSlide(currentIndex + 1);
+    }
+
+    function prevSlide() {
+      if (currentIndex > 0) updateSlide(currentIndex - 1);
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ') {
+        e.preventDefault();
+        nextSlide();
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        prevSlide();
+      }
+    });
+
+    updateSlide(0);
+  </script>
+</body>
+</html>
