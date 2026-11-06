@@ -1,16 +1,19 @@
-"""Panel lateral derecho de clasificación y probabilidades en tiempo real (SPEC §2.2.2 y §2.3.2).
+"""Panel lateral derecho de clasificación y probabilidades en tiempo real (gui/RankingPanel.py).
 
-Muestra el listado ordenado descendentemente de las 27 letras del alfabeto español
-según P(Carácter | O_{1:t}), junto con un icono estático de referencia del trazo,
-porcentaje y valor decimal en [0.0, 1.0].
+Diseño limpio y moderno acorde a los mockups:
+- Cabecera compacta: "Letra más probable" -> "Esperando trazo" / Letra reconocida (%).
+- Etiqueta "P(c | O1:t) de cada letra".
+- Listado de las 27 letras: imagen/glifo de referencia a la izquierda, barra de progreso estilizada y porcentaje a la derecha.
 """
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Sequence
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -21,249 +24,263 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.config import get_config
+from core.config import PROJECT_ROOT, get_config
 from training.augment import canonical_unit_strokes
 
 
-def build_letter_reference_pixmap(letter: str, size: int = 32) -> QPixmap:
-    """Genera un icono estático de referencia con la forma canónica de la letra."""
+def _load_canonical_data() -> dict[str, dict]:
+    path = PROJECT_ROOT / "data" / "canonical_glyphs.json"
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+_GLYPH_CACHE = _load_canonical_data()
+
+
+def build_letter_reference_pixmap(letter: str, size: int = 34) -> QPixmap:
+    """Genera un icono estático de referencia mostrando cómo debe dibujarse la letra."""
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
 
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-    painter.setPen(QPen(QColor("#cbd5e1"), 1.0))
-    painter.setBrush(QColor("#f8fafc"))
-    painter.drawRoundedRect(1, 1, size - 2, size - 2, 5, 5)
+    # Tarjeta base blanca con borde suave
+    painter.setPen(QPen(QColor("#e2e8f0"), 1.0))
+    painter.setBrush(QBrush(QColor("#f8fafc")))
+    painter.drawRoundedRect(1, 1, size - 2, size - 2, 6, 6)
 
     margin = 5.0
     span = size - 2.0 * margin
-    try:
-        strokes = canonical_unit_strokes(letter)
-    except ValueError:
-        strokes = []
 
-    pen = QPen(QColor("#1e40af"), 2.0, Qt.PenStyle.SolidLine)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    glyph_info = _GLYPH_CACHE.get(letter)
+    if glyph_info and "strokes" in glyph_info:
+        strokes = glyph_info["strokes"]
+        start_pts = glyph_info.get("start_points", [])
+    else:
+        try:
+            strokes = canonical_unit_strokes(letter)
+            start_pts = [[float(s[0][0]), float(s[0][1])] for s in strokes if len(s)]
+        except Exception:
+            strokes = []
+            start_pts = []
+
+    pen = QPen(QColor("#1e293b"), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
     painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
 
-    for idx, stroke in enumerate(strokes):
-        pts = [QPointF(margin + float(p[0]) * span, margin + float(p[1]) * span) for p in stroke]
-        if len(pts) == 1:
-            painter.drawEllipse(pts[0], 1.5, 1.5)
-        elif len(pts) >= 2:
-            path = QPainterPath(pts[0])
-            for pt in pts[1:]:
-                path.lineTo(pt)
-            painter.drawPath(path)
-        if idx == 0 and pts:
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor("#16a34a"))
-            painter.drawEllipse(pts[0], 2.0, 2.0)
-            painter.setPen(pen)
+    for stroke in strokes:
+        if len(stroke) < 2:
+            continue
+        path = QPainterPath()
+        p0 = stroke[0]
+        path.moveTo(margin + float(p0[0]) * span, margin + float(p0[1]) * span)
+        for p in stroke[1:]:
+            path.lineTo(margin + float(p[0]) * span, margin + float(p[1]) * span)
+        painter.drawPath(path)
+
+    # Punto verde en el inicio del trazo principal
+    if start_pts:
+        sp = start_pts[0]
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor("#16a34a")))
+        painter.drawEllipse(QPointF(margin + float(sp[0]) * span, margin + float(sp[1]) * span), 2.5, 2.5)
 
     painter.end()
     return pixmap
 
 
 class _LetterRankRow(QFrame):
-    """Fila individual del ranking para una clase del alfabeto."""
+    """Fila individual de la lista: glifo a la izquierda, letra, barra al centro, porcentaje a la derecha."""
 
-    def __init__(self, rank: int, letter: str, icon_pixmap: QPixmap, parent: QWidget | None = None) -> None:
+    def __init__(self, letter: str, icon_pixmap: QPixmap, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setObjectName("RankRow")
-        self.setFixedHeight(42)
+        self.letter = letter
+        self.setFixedHeight(38)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setContentsMargins(6, 2, 6, 2)
         layout.setSpacing(8)
 
-        self.lbl_rank = QLabel(f"{rank:2d}.")
-        self.lbl_rank.setFixedWidth(26)
-        self.lbl_rank.setFont(QFont("Segoe UI", 9))
-
+        # Icono con la imagen de cómo trazar la letra
         self.lbl_icon = QLabel()
-        self.lbl_icon.setFixedSize(32, 32)
+        self.lbl_icon.setFixedSize(30, 30)
         self.lbl_icon.setPixmap(icon_pixmap)
+        layout.addWidget(self.lbl_icon)
 
+        # Letra en texto limpio
         self.lbl_letter = QLabel(letter)
-        self.lbl_letter.setFixedWidth(28)
-        self.lbl_letter.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_letter.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        self.lbl_letter.setFixedWidth(16)
+        self.lbl_letter.setStyleSheet("font-size: 13px; font-weight: 600; color: #334155;")
+        layout.addWidget(self.lbl_letter)
 
+        # Barra de progreso estilizada
         self.bar = QProgressBar()
         self.bar.setRange(0, 1000)
         self.bar.setValue(0)
         self.bar.setTextVisible(False)
         self.bar.setFixedHeight(8)
-
-        self.lbl_prob = QLabel("0.0% (0.000)")
-        self.lbl_prob.setFixedWidth(98)
-        self.lbl_prob.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.lbl_prob.setFont(QFont("Consolas", 9))
-
-        layout.addWidget(self.lbl_rank)
-        layout.addWidget(self.lbl_icon)
-        layout.addWidget(self.lbl_letter)
         layout.addWidget(self.bar, stretch=1)
-        layout.addWidget(self.lbl_prob)
+
+        # Porcentaje
+        self.lbl_pct = QLabel("0.0%")
+        self.lbl_pct.setFixedWidth(50)
+        self.lbl_pct.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.lbl_pct.setStyleSheet("font-size: 11px; font-weight: 500; color: #64748b;")
+        layout.addWidget(self.lbl_pct)
 
         self.set_highlight(False)
 
-    def set_highlight(self, is_top_active: bool) -> None:
-        if is_top_active:
+    def set_highlight(self, is_top: bool) -> None:
+        if is_top:
             self.setStyleSheet(
-                "QFrame#RankRow { background-color: #eff6ff; border: 1px solid #93c5fd; border-radius: 6px; }"
+                "QFrame { background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; }"
             )
-            self.lbl_rank.setStyleSheet("color: #1d4ed8; font-weight: bold; background: transparent;")
-            self.lbl_letter.setStyleSheet("color: #1e3a8a; background: transparent;")
-            self.lbl_prob.setStyleSheet("color: #1e3a8a; font-weight: bold; background: transparent;")
+            self.lbl_letter.setStyleSheet("font-size: 13px; font-weight: 700; color: #15803d;")
+            self.lbl_pct.setStyleSheet("font-size: 11px; font-weight: 700; color: #15803d;")
             self.bar.setStyleSheet(
-                "QProgressBar { background-color: #dbeafe; border-radius: 4px; border: none; } "
-                "QProgressBar::chunk { background-color: #2563eb; border-radius: 4px; }"
+                "QProgressBar { background-color: #dcfce7; border-radius: 4px; border: none; } "
+                "QProgressBar::chunk { background-color: #16a34a; border-radius: 4px; }"
             )
         else:
             self.setStyleSheet(
-                "QFrame#RankRow { background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; }"
+                "QFrame { background-color: #ffffff; border: 1px solid #f1f5f9; border-radius: 6px; }"
             )
-            self.lbl_rank.setStyleSheet("color: #64748b; background: transparent;")
-            self.lbl_letter.setStyleSheet("color: #1e293b; background: transparent;")
-            self.lbl_prob.setStyleSheet("color: #475569; background: transparent;")
+            self.lbl_letter.setStyleSheet("font-size: 13px; font-weight: 600; color: #334155;")
+            self.lbl_pct.setStyleSheet("font-size: 11px; font-weight: 500; color: #64748b;")
             self.bar.setStyleSheet(
                 "QProgressBar { background-color: #f1f5f9; border-radius: 4px; border: none; } "
-                "QProgressBar::chunk { background-color: #64748b; border-radius: 4px; }"
+                "QProgressBar::chunk { background-color: #94a3b8; border-radius: 4px; }"
             )
 
 
 class RankingPanel(QFrame):
-    """Panel derecho con la predicción Top-1 y el listado ordenado de las 27 clases."""
+    """Panel lateral derecho de clasificación y probabilidades en tiempo real."""
 
-    def __init__(self, title: str = "Clasificación en Tiempo Real", parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.cfg = get_config()
-        self.setObjectName("RankingRoot")
-        self.setFixedWidth(365)
+        self.setFixedWidth(310)
         self.setStyleSheet(
-            "QFrame#RankingRoot { background-color: #ffffff; border: 1px solid #d1d5db; border-radius: 8px; }"
+            "RankingPanel { background-color: #ffffff; border-left: 1px solid #e2e8f0; }"
         )
 
+        global _GLYPH_CACHE
+        if not _GLYPH_CACHE:
+            _GLYPH_CACHE = _load_canonical_data()
+
         self.icons: dict[str, QPixmap] = {
-            ch: build_letter_reference_pixmap(ch, size=32) for ch in self.cfg.letters
+            ch: build_letter_reference_pixmap(ch, size=30) for ch in self.cfg.letters
         }
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(12, 12, 12, 12)
-        root_layout.setSpacing(8)
+        root_layout.setContentsMargins(16, 16, 16, 16)
+        root_layout.setSpacing(10)
 
-        lbl_title = QLabel(title)
-        lbl_title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        lbl_title.setStyleSheet("color: #1e293b; background: transparent;")
-        root_layout.addWidget(lbl_title)
+        # Encabezado compacto
+        self.lbl_top_hdr = QLabel("Letra más probable")
+        self.lbl_top_hdr.setStyleSheet("font-size: 11px; font-weight: 600; color: #64748b;")
+        root_layout.addWidget(self.lbl_top_hdr)
 
-        # Recuadro superior con la letra reconocida actualmente
-        self.top_card = QFrame()
-        self.top_card.setObjectName("TopSummaryCard")
-        self.top_card.setStyleSheet(
-            "QFrame#TopSummaryCard { background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; }"
-        )
-        card_layout = QHBoxLayout(self.top_card)
-        card_layout.setContentsMargins(12, 8, 12, 8)
-        card_layout.setSpacing(10)
+        self.lbl_top_val = QLabel("Esperando trazo")
+        self.lbl_top_val.setStyleSheet("font-size: 17px; font-weight: 700; color: #1e293b;")
+        root_layout.addWidget(self.lbl_top_val)
 
+        # Label de compatibilidad para tests
         self.lbl_top_char = QLabel("—")
-        self.lbl_top_char.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
-        self.lbl_top_char.setMinimumWidth(48)
-        self.lbl_top_char.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_top_char.setStyleSheet("color: #1d4ed8; background: transparent;")
+        self.lbl_top_char.setVisible(False)
+        root_layout.addWidget(self.lbl_top_char)
 
-        info_col = QVBoxLayout()
-        info_col.setSpacing(2)
-        self.lbl_top_prob = QLabel("Sin trazo activo")
-        self.lbl_top_prob.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        self.lbl_top_prob.setStyleSheet("color: #1e293b; background: transparent;")
+        self.lbl_sub = QLabel("P(c | O1:t) de cada letra")
+        self.lbl_sub.setStyleSheet("font-size: 11px; color: #94a3b8; margin-top: 4px;")
+        root_layout.addWidget(self.lbl_sub)
 
-        self.lbl_viterbi = QLabel("Estado Viterbi: —  |  T = 0")
-        self.lbl_viterbi.setFont(QFont("Segoe UI", 9))
-        self.lbl_viterbi.setStyleSheet("color: #64748b; background: transparent;")
-
-        info_col.addWidget(self.lbl_top_prob)
-        info_col.addWidget(self.lbl_viterbi)
-        card_layout.addWidget(self.lbl_top_char)
-        card_layout.addLayout(info_col, stretch=1)
-        root_layout.addWidget(self.top_card)
-
-        hdr = QLabel("Pos.  Guía  Letra   Probabilidad P(c | O₁:ₜ)")
-        hdr.setFont(QFont("Segoe UI", 9))
-        hdr.setStyleSheet("color: #64748b; background: transparent;")
-        root_layout.addWidget(hdr)
-
+        # Área de desplazamiento con las 27 filas
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet("background: transparent;")
+        scroll.setStyleSheet("background: transparent; border: none;")
 
         container = QWidget()
         container.setStyleSheet("background: transparent;")
         self.rows_layout = QVBoxLayout(container)
         self.rows_layout.setContentsMargins(0, 0, 4, 0)
-        self.rows_layout.setSpacing(4)
+        self.rows_layout.setSpacing(3)
 
         self.rows: list[_LetterRankRow] = []
-        for idx, ch in enumerate(self.cfg.letters, start=1):
-            row = _LetterRankRow(idx, ch, self.icons[ch])
+        self._rows_by_char: dict[str, _LetterRankRow] = {}
+        for ch in self.cfg.letters:
+            row = _LetterRankRow(ch, self.icons[ch])
             self.rows.append(row)
+            self._rows_by_char[ch] = row
             self.rows_layout.addWidget(row)
         self.rows_layout.addStretch(1)
 
         scroll.setWidget(container)
         root_layout.addWidget(scroll, stretch=1)
 
-    def reset_ranking(self) -> None:
-        """Restaura el panel al estado inicial."""
+    def reset(self) -> None:
+        """Restablece todas las probabilidades a 0.0% y el texto a 'Esperando trazo'."""
         self.lbl_top_char.setText("—")
-        self.lbl_top_prob.setText("Dibuja una letra para clasificar")
-        self.lbl_viterbi.setText("Estado Viterbi: —  |  T = 0")
-        for idx, (row, ch) in enumerate(zip(self.rows, self.cfg.letters), start=1):
-            row.lbl_rank.setText(f"{idx:2d}.")
-            row.lbl_letter.setText(ch)
-            row.lbl_icon.setPixmap(self.icons[ch])
+        self.lbl_top_val.setText("Esperando trazo")
+        self.lbl_top_val.setStyleSheet("font-size: 17px; font-weight: 700; color: #1e293b;")
+        for row in self.rows:
             row.bar.setValue(0)
-            row.lbl_prob.setText("0.0% (0.000)")
+            row.lbl_pct.setText("0.0%")
             row.set_highlight(False)
+
+    def reset_ranking(self) -> None:
+        self.reset()
 
     def update_ranking(
         self,
-        ranking: Sequence[tuple[str, float, float]],
-        top_letter: str | None,
-        current_state: int | None,
-        n_states: int | None,
-        n_obs: int,
+        ranking: Sequence[tuple[str, float]],
+        top_letter: str | None = None,
+        current_state: int | None = None,
+        n_states: int | None = None,
+        n_obs: int = 0,
     ) -> None:
-        """Actualiza las 27 filas en orden descendente de probabilidad posterior."""
-        if not ranking or n_obs == 0 or top_letter is None:
-            self.reset_ranking()
+        self.update_probabilities(ranking, current_state, n_obs)
+
+    def update_probabilities(
+        self,
+        ranking: Sequence[tuple],
+        viterbi_state: int | None = None,
+        n_obs: int = 0,
+    ) -> None:
+        """Actualiza las probabilidades y reordena la vista mostrando el ganador."""
+        if not ranking:
+            self.reset()
             return
 
-        top_prob = ranking[0][1]
-        self.lbl_top_char.setText(top_letter)
-        self.lbl_top_prob.setText(
-            f"Letra más probable: '{top_letter}' ({top_prob * 100:5.1f}%)"
-        )
-        state_txt = (
-            f"S_{current_state + 1}/{n_states}"
-            if current_state is not None and n_states is not None
-            else "—"
-        )
-        self.lbl_viterbi.setText(f"Estado Viterbi: {state_txt}  |  T = {n_obs}")
+        top_char = ranking[0][0]
+        top_prob = float(ranking[0][1])
+        pct = top_prob * 100.0
 
-        for idx, (row, (letter, prob, _log_p)) in enumerate(zip(self.rows, ranking), start=1):
-            row.lbl_rank.setText(f"{idx:2d}.")
-            row.lbl_letter.setText(letter)
-            if letter in self.icons:
-                row.lbl_icon.setPixmap(self.icons[letter])
-            bar_val = int(round(max(0.0, min(1.0, prob)) * 1000))
-            row.bar.setValue(bar_val)
-            row.lbl_prob.setText(f"{prob * 100:5.1f}% ({prob:.3f})")
-            row.set_highlight(idx == 1)
+        if n_obs > 0 and top_prob > 0.05:
+            self.lbl_top_char.setText(top_char)
+            self.lbl_top_val.setText(f"{top_char}  ({pct:.1f}%)")
+            self.lbl_top_val.setStyleSheet("font-size: 20px; font-weight: 700; color: #16a34a;")
+        else:
+            self.lbl_top_char.setText("—")
+            self.lbl_top_val.setText("Esperando trazo")
+            self.lbl_top_val.setStyleSheet("font-size: 17px; font-weight: 700; color: #1e293b;")
+
+        # Reordenar las filas en el layout según el ranking
+        for rank_idx, item in enumerate(ranking):
+            letter = item[0]
+            prob = float(item[1])
+            row = self._rows_by_char.get(letter)
+            if row is not None:
+                val = int(round(prob * 1000))
+                row.bar.setValue(val)
+                row.lbl_pct.setText(f"{prob * 100.0:4.1f}%")
+                is_top = (rank_idx == 0 and n_obs > 0 and prob > 0.05)
+                row.set_highlight(is_top)
+                self.rows_layout.removeWidget(row)
+                self.rows_layout.insertWidget(rank_idx, row)

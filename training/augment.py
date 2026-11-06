@@ -355,22 +355,31 @@ def save_raw_sample(
 def load_raw_samples(
     letter: str, mode: str = "2d", base_dir: Path | None = None
 ) -> list[list[np.ndarray]]:
-    """Carga todas las muestras crudas de una letra desde data/raw/<mode>/<alias>/."""
+    """Carga todas las muestras crudas de una letra desde data/raw/<mode>/<alias>/ o data/letras/<alias>.json."""
     cfg = get_config()
     alias = cfg.file_name(letter)
     root = base_dir if base_dir is not None else PROJECT_ROOT / "data" / "raw"
     folder = root / mode / alias
-    if not folder.exists():
-        return []
     dim = 3 if mode == "3d" else 2
     samples: list[list[np.ndarray]] = []
-    for fpath in sorted(folder.glob("*.json")):
-        with open(fpath, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        strokes = [np.asarray(s, dtype=float).reshape(-1, dim) for s in data["strokes"]]
-        strokes = [s for s in strokes if len(s) > 0]
-        if strokes:
-            samples.append(strokes)
+    if folder.exists():
+        for fpath in sorted(folder.glob("*.json")):
+            with open(fpath, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            strokes = [np.asarray(s, dtype=float).reshape(-1, dim) for s in data["strokes"]]
+            strokes = [s for s in strokes if len(s) > 0]
+            if strokes:
+                samples.append(strokes)
+    if not samples and mode == "2d":
+        letra_file = PROJECT_ROOT / "data" / "letras" / f"{alias}.json"
+        if letra_file.exists():
+            with open(letra_file, "r", encoding="utf-8") as fh:
+                d = json.load(fh)
+            raw_list = d.get(letter, d.get(alias, []))
+            for s in raw_list:
+                strokes = [np.asarray(st, dtype=float)[:, :2] for st in s if len(st) > 0]
+                if strokes:
+                    samples.append(strokes)
     return samples
 
 

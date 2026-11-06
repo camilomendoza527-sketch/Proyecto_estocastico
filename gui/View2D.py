@@ -1,14 +1,9 @@
-"""Ventana B: Reconocedor y Visualizador 2D (SPEC §2.2).
+"""Ventana Modo 2D: Reconocedor y Visualizador en Plano Cartesiano (gui/View2D.py).
 
-Sección Izquierda:
-- Lienzo interactivo 2D con recuadro guía de lado expected_letter_size.
-- Levantar el ratón solo separa sub-trazos; únicamente los botones
-  "Limpiar Lienzo" y "Reiniciar Captura" cierran la captura.
-- Proyección dinámica de trayectoria futura (autocompletado espacial punteado)
-  actualizada en tiempo real paso a paso mientras el usuario dibuja.
-
-Sección Derecha:
-- RankingPanel ordenado descendentemente según P(Carácter | O_{1:t}) con iconos.
+Diseño limpio acorde a la Imagen 2:
+- Barra superior: 'Modo 2D' (título), 'Plano cartesiano' (subtítulo) y botones [Reiniciar captura], [Limpiar lienzo].
+- Lienzo central: tarjeta blanca redondeada con cruz central tenue, marca de agua 'Dibuja una letra aquí' y pie informativo.
+- Panel derecho: clasificación en tiempo real compacta con glifos de referencia.
 """
 
 from __future__ import annotations
@@ -17,13 +12,13 @@ from typing import Callable
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
-    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -39,13 +34,11 @@ class RecognizerCanvas2D(QFrame):
 
     def __init__(
         self,
-        guide_size: float,
         on_strokes_changed: Callable[[], None],
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("Canvas2DFrame")
-        self.guide_size = float(guide_size)
         self.on_strokes_changed = on_strokes_changed
 
         self.strokes: list[list[tuple[float, float]]] = []
@@ -55,18 +48,13 @@ class RecognizerCanvas2D(QFrame):
         self._last_center: tuple[float, float] | None = None
 
         self.setMinimumSize(420, 420)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setStyleSheet(
-            "QFrame#Canvas2DFrame { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; }"
+            "QFrame#Canvas2DFrame { background-color: #ffffff; border: 1.5px solid #e2e8f0; border-radius: 12px; }"
         )
         self.setCursor(Qt.CursorShape.CrossCursor)
 
-    def guide_rect(self) -> QRectF:
-        w, h = self.width(), self.height()
-        s = self.guide_size
-        return QRectF((w - s) / 2.0, (h - s) / 2.0, s, s)
-
     def resizeEvent(self, event) -> None:  # noqa: N802
-        """Mantiene los trazos centrados en el recuadro guía al maximizar o redimensionar."""
         super().resizeEvent(event)
         new_cx = self.width() / 2.0
         new_cy = self.height() / 2.0
@@ -105,7 +93,7 @@ class RecognizerCanvas2D(QFrame):
         self.projected_strokes = projected
         self.update()
 
-    # --- Eventos de ratón (levantar el ratón solo separa sub-trazos) ----------
+    # --- Eventos de ratón -----------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
             pos = event.position()
@@ -133,32 +121,26 @@ class RecognizerCanvas2D(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        rect = self.guide_rect()
+        w = float(self.width())
+        h = float(self.height())
+        cx = w / 2.0
+        cy = h / 2.0
 
-        # Recuadro guía de tamaño expected_letter_size
-        guide_pen = QPen(QColor("#94a3b8"), 1.5, Qt.PenStyle.DashLine)
-        painter.setPen(guide_pen)
-        painter.drawRect(rect)
-
-        # Ejes centrales sutiles
-        axis_pen = QPen(QColor("#e2e8f0"), 1.0, Qt.PenStyle.DotLine)
+        # Ejes centrales tenues (cruz en el centro del lienzo)
+        axis_pen = QPen(QColor("#f1f5f9"), 1.5, Qt.PenStyle.DashLine)
         painter.setPen(axis_pen)
-        painter.drawLine(
-            QPointF(rect.left(), rect.center().y()),
-            QPointF(rect.right(), rect.center().y()),
-        )
-        painter.drawLine(
-            QPointF(rect.center().x(), rect.top()),
-            QPointF(rect.center().x(), rect.bottom()),
-        )
+        painter.drawLine(QPointF(20, cy), QPointF(w - 20, cy))
+        painter.drawLine(QPointF(cx, 20), QPointF(cx, h - 20))
 
-        painter.setPen(QColor("#64748b"))
-        painter.setFont(QFont("Segoe UI", 9))
-        painter.drawText(
-            int(rect.left() + 4),
-            int(rect.top() - 6),
-            f"Área guía ({int(self.guide_size)}×{int(self.guide_size)} px)",
-        )
+        # Texto marca de agua cuando el lienzo está vacío
+        has_strokes = any(len(s) > 0 for s in self.strokes)
+        if not has_strokes:
+            painter.setPen(QColor("#cbd5e1"))
+            font = QFont("Segoe UI", 16, QFont.Weight.Normal)
+            painter.setFont(font)
+            rect = QRectF(0, 0, w, h)
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Dibuja una letra aquí")
+            return
 
         # 1. Proyección dinámica futura (verde punteado)
         if self.show_projection and self.projected_strokes:
@@ -192,7 +174,7 @@ class RecognizerCanvas2D(QFrame):
             painter.drawEllipse(QPointF(float(last_proj[0]), float(last_proj[1])), 4.0, 4.0)
 
         # 2. Trazos realizados por el usuario (azul oscuro nítido)
-        user_pen = QPen(QColor("#1d4ed8"), 3.8, Qt.PenStyle.SolidLine)
+        user_pen = QPen(QColor("#1e293b"), 3.8, Qt.PenStyle.SolidLine)
         user_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         user_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setPen(user_pen)
@@ -218,14 +200,12 @@ class RecognizerCanvas2D(QFrame):
 
 
 class View2D(QWidget):
-    """Ventana B: Reconocedor y Visualizador 2D."""
+    """Pantalla de Modo 2D con lienzo y clasificación lateral."""
 
     def __init__(
         self,
         classifier: HMMClassifier,
         extractor: FeatureExtractor2D,
-        on_back_menu: Callable[[], None],
-        on_switch_3d: Callable[[], None],
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -233,158 +213,113 @@ class View2D(QWidget):
         self.classifier = classifier
         self.extractor = extractor
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(16, 12, 16, 14)
-        root.setSpacing(10)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # --- Barra superior de navegación -------------------------------------
-        nav = QHBoxLayout()
-        btn_menu = QPushButton("← Menú Principal")
-        btn_menu.setStyleSheet(self._secondary_btn_style())
-        btn_menu.clicked.connect(on_back_menu)
+        # Columna principal izquierda: cabecera + lienzo + pie
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(28, 24, 24, 24)
+        left_layout.setSpacing(14)
 
-        lbl_header = QLabel("Modo 2D — Reconocedor y Visualizador en Plano Cartesiano")
-        lbl_header.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        lbl_header.setStyleSheet("color: #1e293b; background: transparent;")
+        # Barra superior: Título a la izquierda, botones a la derecha
+        top_bar = QHBoxLayout()
+        header_v = QVBoxLayout()
+        header_v.setSpacing(2)
 
-        btn_to_3d = QPushButton("Ir a Modo 3D (Esfera) →")
-        btn_to_3d.setStyleSheet(self._primary_btn_style())
-        btn_to_3d.clicked.connect(on_switch_3d)
+        lbl_title = QLabel("Modo 2D")
+        lbl_title.setStyleSheet("font-size: 20px; font-weight: 700; color: #1e293b;")
+        lbl_sub = QLabel("Plano cartesiano")
+        lbl_sub.setStyleSheet("font-size: 13px; color: #64748b;")
+        header_v.addWidget(lbl_title)
+        header_v.addWidget(lbl_sub)
+        top_bar.addLayout(header_v, stretch=1)
 
-        nav.addWidget(btn_menu)
-        nav.addSpacing(10)
-        nav.addWidget(lbl_header, stretch=1)
-        nav.addWidget(btn_to_3d)
-        root.addLayout(nav)
-
-        # --- Cuerpo principal: Izquierda (Lienzo) | Derecha (Ranking) ---------
-        body = QHBoxLayout()
-        body.setSpacing(14)
-        root.addLayout(body, stretch=1)
-
-        left_col = QVBoxLayout()
-        left_col.setSpacing(8)
-        body.addLayout(left_col, stretch=1)
-
-        self.canvas = RecognizerCanvas2D(
-            guide_size=self.cfg.features.expected_letter_size,
-            on_strokes_changed=self._evaluate_realtime,
-        )
-        left_col.addWidget(self.canvas, stretch=1)
-
-        self.lbl_obs = QLabel(
-            "Dibuja con clic izquierdo dentro del recuadro guía. Levantar el ratón separa sub-trazos."
-        )
-        self.lbl_obs.setWordWrap(True)
-        self.lbl_obs.setFont(QFont("Segoe UI", 9))
-        self.lbl_obs.setStyleSheet(
-            "background-color: #ffffff; border: 1px solid #d1d5db; border-radius: 6px; "
-            "padding: 6px 10px; color: #475569;"
-        )
-        left_col.addWidget(self.lbl_obs)
-
-        # Controles: "Limpiar Lienzo" y "Reiniciar Captura"
-        ctrl_row = QHBoxLayout()
-        ctrl_row.setSpacing(8)
-
-        self.btn_clear = QPushButton("Limpiar Lienzo")
-        self.btn_clear.setStyleSheet(self._danger_btn_style())
-        self.btn_clear.clicked.connect(self.reset_capture)
-
-        self.btn_restart = QPushButton("Reiniciar Captura")
-        self.btn_restart.setStyleSheet(self._primary_btn_style())
+        # Botones de acción en la esquina superior derecha
+        self.btn_restart = QPushButton("Reiniciar captura")
+        self.btn_restart.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_restart.setStyleSheet(self._button_style())
         self.btn_restart.clicked.connect(self.reset_capture)
 
-        self.btn_undo = QPushButton("Deshacer Sub-trazo")
-        self.btn_undo.setStyleSheet(self._secondary_btn_style())
-        self.btn_undo.clicked.connect(self.canvas.undo_substroke)
+        self.btn_clear = QPushButton("Limpiar lienzo")
+        self.btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear.setStyleSheet(self._button_style())
+        self.btn_clear.clicked.connect(self.reset_capture)
 
-        self.chk_proj = QCheckBox("Mostrar proyección punteada")
-        self.chk_proj.setChecked(True)
-        self.chk_proj.setStyleSheet("color: #1e293b; font-weight: bold;")
-        self.chk_proj.toggled.connect(self._on_toggle_projection)
+        top_bar.addWidget(self.btn_restart)
+        top_bar.addWidget(self.btn_clear)
+        left_layout.addLayout(top_bar)
 
-        ctrl_row.addWidget(self.btn_clear)
-        ctrl_row.addWidget(self.btn_restart)
-        ctrl_row.addWidget(self.btn_undo)
-        ctrl_row.addStretch(1)
-        ctrl_row.addWidget(self.chk_proj)
-        left_col.addLayout(ctrl_row)
+        # Lienzo de dibujo central
+        self.canvas = RecognizerCanvas2D(on_strokes_changed=self._evaluate_realtime)
+        left_layout.addWidget(self.canvas, stretch=1)
 
-        # Panel derecho de clasificación con ancho fijo para no deformarse al maximizar
-        self.ranking_panel = RankingPanel(title="Clasificación 2D — P(Carácter | O₁:ₜ)")
-        body.addWidget(self.ranking_panel, stretch=0)
-        self.ranking_panel.reset_ranking()
+        # Pie inferior
+        lbl_footer = QLabel("Mantén presionado el clic izquierdo para trazar.")
+        lbl_footer.setStyleSheet("font-size: 12px; color: #64748b;")
+        left_layout.addWidget(lbl_footer)
+
+        root.addWidget(left_widget, stretch=1)
+
+        # Panel lateral derecho de ranking
+        self.ranking_panel = RankingPanel(self)
+        root.addWidget(self.ranking_panel)
+
+    def _button_style(self) -> str:
+        return (
+            "QPushButton { "
+            "background-color: #ffffff; "
+            "border: 1px solid #cbd5e1; "
+            "border-radius: 6px; "
+            "padding: 7px 14px; "
+            "font-size: 12px; "
+            "font-weight: 500; "
+            "color: #334155; "
+            "} "
+            "QPushButton:hover { "
+            "background-color: #f1f5f9; "
+            "border-color: #94a3b8; "
+            "}"
+        )
 
     def reset_capture(self) -> None:
-        """Cierra la captura actual y reinicia el lienzo y las probabilidades."""
+        """Reinicia el lienzo y el panel de ranking."""
         self.canvas.clear_strokes()
-        self.ranking_panel.reset_ranking()
-
-    def _on_toggle_projection(self, checked: bool) -> None:
-        self.canvas.show_projection = checked
-        self.canvas.update()
+        self.ranking_panel.reset()
 
     def _evaluate_realtime(self) -> None:
-        strokes = self.canvas.get_numpy_strokes()
-        if not strokes:
+        """Ejecuta la extracción de características y clasificador HMM en tiempo real."""
+        raw_strokes = self.canvas.get_numpy_strokes()
+        if not raw_strokes or all(len(s) < 2 for s in raw_strokes):
+            self.ranking_panel.reset()
             self.canvas.set_projected_strokes([])
-            self.ranking_panel.reset_ranking()
-            self.lbl_obs.setText(
-                "Lienzo listo. Levantar el ratón solo separa sub-trazos; usa 'Limpiar Lienzo' "
-                "o 'Reiniciar Captura' para empezar otra letra."
-            )
             return
 
-        res = self.extractor.extract(strokes, realtime=True)
+        res = self.extractor.extract(raw_strokes, realtime=True)
         symbols = res.symbols.tolist()
         if not symbols:
+            self.ranking_panel.reset()
             self.canvas.set_projected_strokes([])
-            self.ranking_panel.reset_ranking()
-            self.lbl_obs.setText(f"Sub-trazos: {len(strokes)} | Continúa trazando...")
             return
 
         ranking, top_letter, current_state, future_symbols = self.classifier.predict_and_project(
             symbols, max_symbols=45
         )
-        n_states = self.classifier.models[top_letter].n_states if top_letter else None
-        self.ranking_panel.update_ranking(
+        if not ranking:
+            self.ranking_panel.reset()
+            self.canvas.set_projected_strokes([])
+            return
+
+        # Autocompletado proyectado futuro
+        if self.canvas.show_projection and future_symbols:
+            projected = self.extractor.reconstruct_projected_strokes(res, future_symbols)
+            self.canvas.set_projected_strokes(projected)
+        else:
+            self.canvas.set_projected_strokes([])
+
+        self.ranking_panel.update_probabilities(
             ranking=ranking,
-            top_letter=top_letter,
-            current_state=current_state,
-            n_states=n_states,
+            viterbi_state=current_state,
             n_obs=len(symbols),
-        )
-
-        projected = self.extractor.reconstruct_projected_strokes(res, future_symbols)
-        self.canvas.set_projected_strokes(projected)
-
-        sym_txt = " ".join(self.extractor.symbol_label(s) for s in symbols[-16:])
-        self.lbl_obs.setText(
-            f"Sub-trazos: {len(strokes)}  |  Observaciones T = {len(symbols)}  |  "
-            f"Proyección '{top_letter}': {len(future_symbols)} pasos  |  Últimos: {sym_txt}"
-        )
-
-    @staticmethod
-    def _primary_btn_style() -> str:
-        return (
-            "QPushButton { background-color: #2563eb; color: #ffffff; border: none; "
-            "border-radius: 6px; padding: 7px 14px; font-weight: bold; } "
-            "QPushButton:hover { background-color: #1d4ed8; }"
-        )
-
-    @staticmethod
-    def _secondary_btn_style() -> str:
-        return (
-            "QPushButton { background-color: #ffffff; color: #1e293b; border: 1px solid #cbd5e1; "
-            "border-radius: 6px; padding: 7px 14px; font-weight: bold; } "
-            "QPushButton:hover { background-color: #f1f5f9; }"
-        )
-
-    @staticmethod
-    def _danger_btn_style() -> str:
-        return (
-            "QPushButton { background-color: #dc2626; color: #ffffff; border: none; "
-            "border-radius: 6px; padding: 7px 14px; font-weight: bold; } "
-            "QPushButton:hover { background-color: #b91c1c; }"
         )

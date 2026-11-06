@@ -1,196 +1,198 @@
-"""Ventana A: Menú Principal de Inicio (SPEC §2.1).
+"""Pantalla de Inicio (gui/MainMenu.py) — Vista 'Elige un modo'.
 
-Pantalla de bienvenida institucional sencilla y limpia que permite seleccionar:
-1. Modo 2D: Reconocimiento y proyección de trazos en plano cartesiano bidimensional.
-2. Modo 3D: Reconocimiento y proyección de trazos sobre la superficie de una esfera 3D.
+Diseño minimalista y limpio acorde a la Imagen 1:
+- Título principal: 'Elige un modo'
+- Subtítulo: 'Dibuja una letra y el modelo oculto de Markov la reconoce mientras la trazas.'
+- Dos tarjetas interactivas grandes:
+  1. Modo 2D (Plano cartesiano con icono de recuadro y letra 'a').
+  2. Modo 3D (Superficie esférica con icono de esfera en malla).
 """
 
 from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from core.config import get_config
+
+def _render_2d_icon(size: int = 72) -> QPixmap:
+    """Dibuja el icono de Modo 2D: un marco cuadrado con la letra 'a'."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    margin = 8.0
+    rect = QRectF(margin, margin, size - 2 * margin, size - 2 * margin)
+    painter.setPen(QPen(QColor("#94a3b8"), 1.8, Qt.PenStyle.DashLine))
+    painter.setBrush(QBrush(QColor("#f8fafc")))
+    painter.drawRoundedRect(rect, 8, 8)
+
+    painter.setPen(QColor("#1e293b"))
+    font = QFont("Georgia", int(size * 0.38), QFont.Weight.Normal)
+    painter.setFont(font)
+    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "a")
+    painter.end()
+    return pix
+
+
+def _render_3d_icon(size: int = 72) -> QPixmap:
+    """Dibuja el icono de Modo 3D: esfera en malla alámbrica."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    r = size * 0.38
+    c = size * 0.5
+
+    # Círculo exterior
+    painter.setPen(QPen(QColor("#1e293b"), 1.8))
+    painter.setBrush(QBrush(QColor("#f8fafc")))
+    painter.drawEllipse(QPointF(c, c), r, r)
+
+    # Meridianos y paralelos
+    painter.setPen(QPen(QColor("#94a3b8"), 1.2))
+    painter.drawEllipse(QPointF(c, c), r * 0.5, r)
+    painter.drawEllipse(QPointF(c, c), r, r * 0.4)
+    painter.drawLine(QPointF(c - r, c), QPointF(c + r, c))
+    painter.drawLine(QPointF(c, c - r), QPointF(c, c + r))
+    painter.end()
+    return pix
+
+
+class _ModeCard(QFrame):
+    """Tarjeta interactiva grande para seleccionar un modo."""
+
+    def __init__(
+        self,
+        title: str,
+        subtitle: str,
+        icon_pixmap: QPixmap,
+        on_click: Callable[[], None],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.on_click = on_click
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.setMinimumHeight(240)
+
+        self._normal_style = (
+            "QFrame { "
+            "background-color: #ffffff; "
+            "border: 1.5px solid #e2e8f0; "
+            "border-radius: 12px; "
+            "} "
+            "QFrame:hover { "
+            "border-color: #16a34a; "
+            "background-color: #f8fafc; "
+            "}"
+        )
+        self.setStyleSheet(self._normal_style)
+
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setContentsMargins(24, 28, 24, 28)
+        layout.setSpacing(14)
+
+        # Icono
+        lbl_icon = QLabel()
+        lbl_icon.setPixmap(icon_pixmap)
+        lbl_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_icon.setStyleSheet("background: transparent; border: none;")
+        layout.addWidget(lbl_icon)
+
+        # Título
+        lbl_title = QLabel(title)
+        lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_title.setStyleSheet(
+            "font-size: 18px; font-weight: 700; color: #1e293b; background: transparent; border: none;"
+        )
+        layout.addWidget(lbl_title)
+
+        # Subtítulo
+        lbl_sub = QLabel(subtitle)
+        lbl_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_sub.setStyleSheet(
+            "font-size: 13px; color: #64748b; background: transparent; border: none;"
+        )
+        layout.addWidget(lbl_sub)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.on_click()
+        super().mousePressEvent(event)
 
 
 class MainMenu(QWidget):
-    """Ventana A: Menú Principal de Inicio."""
+    """Pantalla 'Inicio' de bienvenida y selección de modo."""
 
     def __init__(
         self,
         on_select_2d: Callable[[], None],
         on_select_3d: Callable[[], None],
-        n_models_2d: int = 27,
-        n_models_3d: int = 27,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.cfg = get_config()
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(24, 24, 24, 24)
-        outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        outer.setContentsMargins(40, 48, 40, 48)
+        outer.setSpacing(32)
+        outer.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # Contenedor central con ancho máximo fijo para que al maximizar la ventana
-        # no se estire ni se deformen los textos.
-        container = QWidget()
-        container.setMaximumWidth(860)
-        root = QVBoxLayout(container)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(18)
+        # Encabezado
+        header_box = QVBoxLayout()
+        header_box.setSpacing(6)
 
-        # --- Encabezado institucional -----------------------------------------
-        header_card = QFrame()
-        header_card.setObjectName("HeaderCard")
-        header_card.setStyleSheet(
-            "QFrame#HeaderCard { background-color: #ffffff; border: 1px solid #d1d5db; border-radius: 8px; }"
+        title = QLabel("Elige un modo")
+        title.setStyleSheet("font-size: 26px; font-weight: 700; color: #1e293b;")
+
+        subtitle = QLabel(
+            "Dibuja una letra y el modelo oculto de Markov la reconoce mientras la trazas."
         )
-        hdr_layout = QVBoxLayout(header_card)
-        hdr_layout.setContentsMargins(24, 20, 24, 20)
-        hdr_layout.setSpacing(6)
+        subtitle.setStyleSheet("font-size: 14px; color: #64748b;")
 
-        lbl_uni = QLabel("UNIVERSIDAD DE LOS LLANOS")
-        lbl_uni.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_uni.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        lbl_uni.setStyleSheet("color: #1e293b; background: transparent;")
+        header_box.addWidget(title)
+        header_box.addWidget(subtitle)
+        outer.addLayout(header_box)
 
-        lbl_fac = QLabel(
-            "Facultad de Ciencias Básicas e Ingeniería — Programa de Ingeniería de Sistemas"
-        )
-        lbl_fac.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_fac.setFont(QFont("Segoe UI", 10))
-        lbl_fac.setStyleSheet("color: #475569; background: transparent;")
-
-        lbl_course = QLabel("Procesos Estocásticos (603504) — Proyecto Final")
-        lbl_course.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_course.setFont(QFont("Segoe UI", 10))
-        lbl_course.setStyleSheet("color: #64748b; background: transparent;")
-
-        lbl_title = QLabel(
-            "Reconocedor y Clasificador de Caracteres en Tiempo Real (2D / 3D)\n"
-            "mediante Cadenas Ocultas de Markov (HMM)"
-        )
-        lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        lbl_title.setStyleSheet("color: #0f172a; background: transparent;")
-
-        hdr_layout.addWidget(lbl_uni)
-        hdr_layout.addWidget(lbl_fac)
-        hdr_layout.addWidget(lbl_course)
-        hdr_layout.addSpacing(4)
-        hdr_layout.addWidget(lbl_title)
-        root.addWidget(header_card)
-
-        # --- Selección de modo (2D y 3D) --------------------------------------
+        # Fila de tarjetas grandes
         cards_row = QHBoxLayout()
-        cards_row.setSpacing(18)
+        cards_row.setSpacing(24)
 
-        card_2d = self._build_mode_card(
-            title="Modo 2D — Lienzo Plano",
-            description=(
-                "Dibuja caracteres sobre un lienzo bidimensional con clasificación "
-                "y autocompletado punteado en tiempo real."
-            ),
-            status=f"Modelos 2D listos: {n_models_2d}/{len(self.cfg.letters)}",
-            btn_text="Abrir Modo 2D",
+        card_2d = _ModeCard(
+            title="Modo 2D",
+            subtitle="Plano cartesiano",
+            icon_pixmap=_render_2d_icon(80),
             on_click=on_select_2d,
         )
-
-        card_3d = self._build_mode_card(
-            title="Modo 3D — Lienzo Esférico",
-            description=(
-                "Dibuja caracteres directamente sobre la superficie de una esfera 3D "
-                "interactiva con proyección geodésica en tiempo real."
-            ),
-            status=f"Modelos 3D listos: {n_models_3d}/{len(self.cfg.letters)}",
-            btn_text="Abrir Modo 3D (Esfera)",
+        card_3d = _ModeCard(
+            title="Modo 3D",
+            subtitle="Superficie esférica",
+            icon_pixmap=_render_3d_icon(80),
             on_click=on_select_3d,
         )
 
-        cards_row.addWidget(card_2d, stretch=1)
-        cards_row.addWidget(card_3d, stretch=1)
-        root.addLayout(cards_row)
+        cards_row.addWidget(card_2d)
+        cards_row.addWidget(card_3d)
+        outer.addLayout(cards_row)
 
-        # --- Indicaciones de uso ----------------------------------------------
-        conv_card = QFrame()
-        conv_card.setObjectName("ConvCard")
-        conv_card.setStyleSheet(
-            "QFrame#ConvCard { background-color: #ffffff; border: 1px solid #d1d5db; border-radius: 8px; }"
-        )
-        conv_layout = QVBoxLayout(conv_card)
-        conv_layout.setContentsMargins(20, 14, 20, 14)
-        conv_layout.setSpacing(4)
-
-        conv_title = QLabel(
-            f"Indicaciones de trazo (27 letras minúsculas: {' '.join(self.cfg.letters)}):"
-        )
-        conv_title.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        conv_title.setStyleSheet("color: #334155; background: transparent;")
-        conv_layout.addWidget(conv_title)
-
-        for rule in self.cfg.stroke_convention:
-            lbl_rule = QLabel(f"• {rule}")
-            lbl_rule.setFont(QFont("Segoe UI", 9))
-            lbl_rule.setStyleSheet("color: #475569; background: transparent;")
-            conv_layout.addWidget(lbl_rule)
-
-        root.addWidget(conv_card)
-        outer.addWidget(container)
-
-    @staticmethod
-    def _build_mode_card(
-        title: str,
-        description: str,
-        status: str,
-        btn_text: str,
-        on_click: Callable[[], None],
-    ) -> QFrame:
-        card = QFrame()
-        card.setObjectName("ModeCard")
-        card.setStyleSheet(
-            "QFrame#ModeCard { background-color: #ffffff; border: 1px solid #d1d5db; border-radius: 8px; }"
-        )
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(10)
-
-        lbl_title = QLabel(title)
-        lbl_title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        lbl_title.setStyleSheet("color: #1e293b; background: transparent;")
-
-        lbl_desc = QLabel(description)
-        lbl_desc.setWordWrap(True)
-        lbl_desc.setFont(QFont("Segoe UI", 10))
-        lbl_desc.setStyleSheet("color: #475569; background: transparent;")
-
-        lbl_status = QLabel(status)
-        lbl_status.setFont(QFont("Segoe UI", 9))
-        lbl_status.setStyleSheet("color: #16a34a; background: transparent;")
-
-        btn = QPushButton(btn_text)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        btn.setFixedHeight(38)
-        btn.setStyleSheet(
-            "QPushButton { background-color: #2563eb; color: #ffffff; border: none; "
-            "border-radius: 6px; padding: 6px 14px; } "
-            "QPushButton:hover { background-color: #1d4ed8; }"
-        )
-        btn.clicked.connect(on_click)
-
-        layout.addWidget(lbl_title)
-        layout.addWidget(lbl_desc)
-        layout.addSpacing(4)
-        layout.addWidget(lbl_status)
-        layout.addWidget(btn)
-        return card
+        outer.addStretch(1)

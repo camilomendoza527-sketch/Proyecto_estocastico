@@ -16,6 +16,7 @@ Ejecución:
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -30,7 +31,61 @@ from training.augment import (
     generate_seed_dataset_2d,
     generate_seed_dataset_3d,
     load_raw_samples,
+    map_2d_to_sphere,
 )
+
+
+def load_glifo_samples(
+    letter: str, glifo_path: Path | None = None, max_samples: int = 80
+) -> list[list[np.ndarray]]:
+    """Carga muestras reales de data/letras/<alias>.json o data/glifo-dataset-2026-11-06.json."""
+    cfg = get_config()
+    alias = cfg.file_name(letter)
+    
+    # 1. Intentar cargar desde el archivo específico de la letra en data/letras/
+    letra_file = PROJECT_ROOT / "data" / "letras" / f"{alias}.json"
+    if letra_file.exists():
+        try:
+            with open(letra_file, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            raw_list = d.get(letter, d.get(alias, []))[:max_samples]
+            samples = []
+            for s in raw_list:
+                strokes = [np.array(st, dtype=float)[:, :2] for st in s if len(st) > 0]
+                if strokes:
+                    samples.append(strokes)
+            if samples:
+                return samples
+        except Exception:
+            pass
+
+    # 2. Intentar cargar desde el dataset consolidado en data/ o en la raíz
+    candidates = [
+        glifo_path,
+        PROJECT_ROOT / "data" / "glifo-dataset-2026-11-06.json",
+        PROJECT_ROOT / "glifo-dataset-2026-11-06.json",
+    ]
+    path = next((p for p in candidates if p is not None and p.exists()), None)
+    if path is None:
+        return []
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    target_key = None
+    for k in data.keys():
+        cand = "ñ" if (k == "ñ" or (len(k) == 1 and ord(k) == 241)) else k
+        if cand == letter:
+            target_key = k
+            break
+    if target_key is None or target_key not in data:
+        return []
+    raw_list = data[target_key][:max_samples]
+    samples = []
+    for s in raw_list:
+        strokes = [np.array(st, dtype=float)[:, :2] for st in s if len(st) > 0]
+        if strokes:
+            samples.append(strokes)
+    return samples
 
 
 def train_letter_2d(
@@ -128,14 +183,16 @@ def train_all_2d(
 
     trained: dict[str, HMM] = {}
     for idx, letter in enumerate(cfg.letters):
-        samples = load_raw_samples(letter, mode="2d", base_dir=raw_dir)
+        glifo_samples = load_glifo_samples(letter)
+        samples = glifo_samples if glifo_samples else load_raw_samples(letter, mode="2d", base_dir=raw_dir)
         n_states = cfg.states[letter]
+        aug = 1 if glifo_samples else augment_factor
         hmm, history = train_letter_2d(
             letter=letter,
             samples=samples,
             extractor=extractor,
             n_states=n_states,
-            augment_factor=augment_factor,
+            augment_factor=aug,
             max_iter=max_iter,
             seed=100 + idx,
         )
@@ -148,7 +205,7 @@ def train_all_2d(
             ll_end = history[-1] if history else float("nan")
             print(
                 f"[2D K={extractor.K}] '{letter}' (N={n_states:2d}) | "
-                f"muestras={len(samples):2d} | iter={len(history):2d} | "
+                f"muestras={len(samples):2d} {'(glifo)' if glifo_samples else ''} | iter={len(history):2d} | "
                 f"logL: {ll_start:8.1f} -> {ll_end:8.1f} | {model_path.name}"
             )
     return trained
@@ -175,14 +232,27 @@ def train_all_3d(
 
     trained: dict[str, HMM] = {}
     for idx, letter in enumerate(cfg.letters):
-        samples = load_raw_samples(letter, mode="3d", base_dir=raw_dir)
+        glifo_samples = load_glifo_samples(letter)
+        if glifo_samples:
+            samples = [
+                map_2d_to_sphere(
+                    s,
+                    angular_span=cfg.features.expected_angle_3d,
+                    radius=cfg.features.sphere_radius,
+                )
+                for s in glifo_samples
+            ]
+            aug = 1
+        else:
+            samples = load_raw_samples(letter, mode="3d", base_dir=raw_dir)
+            aug = augment_factor
         n_states = cfg.states[letter]
         hmm, history = train_letter_3d(
             letter=letter,
             samples=samples,
             extractor=extractor,
             n_states=n_states,
-            augment_factor=augment_factor,
+            augment_factor=aug,
             max_iter=max_iter,
             seed=300 + idx,
         )

@@ -37,9 +37,9 @@ smoothing_window = 3
 #     sus símbolos coinciden con el prefijo de la letra completa;
 #   - una letra más grande que el recuadro se normaliza a su propia caja.
 expected_letter_size = 250.0
-# Tamaño angular esperado de la letra sobre la esfera (en radianes, ~40°),
+# Tamaño angular esperado de la letra sobre la esfera (en radianes, ~90° = π/2),
 # usado como piso de la escala angular en tiempo real para FeatureExtractor3D.
-expected_angle_3d = 0.7
+expected_angle_3d = 1.57
 # Radio por defecto de la esfera en el modo 3D.
 sphere_radius = 1.0
 # true si las coordenadas de entrada vienen de pantalla (y crece hacia abajo).

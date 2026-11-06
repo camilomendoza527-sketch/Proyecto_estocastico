@@ -131,3 +131,76 @@ def test_view3d_mouse_raycast_drawing_and_projection(qapp):
     assert len(canvas.strokes) == 0
     assert len(canvas.projected_strokes) == 0
     assert v3d.ranking_panel.lbl_top_char.text() == "—"
+
+
+def test_letter_guide_view(qapp):
+    """Verifica que la pantalla Guía de letras cargue las 27 letras y actualice la animación."""
+    win = HMMRecognizerApp()
+    win.show_guia()
+    assert win.stack.currentIndex() == HMMRecognizerApp.IDX_GUIA
+
+    guia = win.view_guia
+    assert len(guia._buttons) == 27
+    assert "a" in guia._buttons
+    assert "ñ" in guia._buttons
+
+    # Seleccionar 'a'
+    guia.select_letter("a")
+    assert guia.current_letter == "a"
+    assert "Letra a" in guia.lbl_info.text()
+    assert guia.demo_canvas._letter == "a"
+    assert len(guia.demo_canvas._strokes) >= 1
+
+    # Seleccionar 'ñ'
+    guia.select_letter("ñ")
+    assert guia.current_letter == "ñ"
+    assert "Letra ñ" in guia.lbl_info.text()
+    assert guia.demo_canvas._letter == "ñ"
+    assert len(guia.demo_canvas._start_points) >= 1
+
+    # Probar trazado interactivo del usuario con el ratón
+    canvas = guia.demo_canvas
+    assert len(canvas.user_strokes) == 0
+
+    p1 = QPointF(100.0, 100.0)
+    press_ev = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        p1,
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    canvas.mousePressEvent(press_ev)
+    assert len(canvas.user_strokes) == 1
+    assert len(canvas.user_strokes[0]) == 1
+
+    p2 = QPointF(105.0, 105.0)
+    move_ev = QMouseEvent(
+        QEvent.Type.MouseMove,
+        p2,
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    canvas.mouseMoveEvent(move_ev)
+    assert len(canvas.user_strokes[0]) == 2
+
+    rel_ev = QMouseEvent(
+        QEvent.Type.MouseButtonRelease,
+        p2,
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    canvas.mouseReleaseEvent(rel_ev)
+    assert canvas._current_user_stroke is None
+    assert len(canvas.user_strokes) == 1
+
+    # Probar botón de limpiar trazo
+    guia.btn_clear.click()
+    assert len(canvas.user_strokes) == 0
+
+    # Probar botón de reiniciar animación
+    guia.btn_restart.click()
+    assert canvas._show_anim is True
+

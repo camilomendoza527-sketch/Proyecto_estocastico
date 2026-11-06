@@ -30,7 +30,7 @@ class FeatureConfig:
     smoothing_window: int
     expected_letter_size: float
     y_axis_down: bool
-    expected_angle_3d: float = 0.7
+    expected_angle_3d: float = 1.57
     sphere_radius: float = 1.0
 
     @property

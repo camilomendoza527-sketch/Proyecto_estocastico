@@ -64,8 +64,8 @@ class SphereCanvas3D(gl.GLViewWidget):
         self.active_camera_orientation: tuple[float, float] = (0.0, 0.0)
 
         self.setMinimumSize(420, 420)
-        self.setBackgroundColor("#e2e8f0")
-        self.opts["distance"] = 2.85 * self.radius
+        self.setBackgroundColor("#ffffff")
+        self.opts["distance"] = 2.4 * self.radius
         self.opts["fov"] = 45
         self.opts["azimuth"] = 0.0
         self.opts["elevation"] = 0.0
@@ -186,7 +186,7 @@ class SphereCanvas3D(gl.GLViewWidget):
         """Reorienta la cámara a la vista frontal estándar."""
         self.opts["azimuth"] = 0.0
         self.opts["elevation"] = 0.0
-        self.opts["distance"] = 2.85 * self.radius
+        self.opts["distance"] = 2.4 * self.radius
         if not self.strokes:
             self.active_camera_orientation = (0.0, 0.0)
             self._update_guide_frame(self.active_camera_orientation)
@@ -327,8 +327,6 @@ class View3D(QWidget):
         self,
         classifier: HMMClassifier,
         extractor: FeatureExtractor3D,
-        on_back_menu: Callable[[], None],
-        on_switch_2d: Callable[[], None],
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -336,111 +334,103 @@ class View3D(QWidget):
         self.classifier = classifier
         self.extractor = extractor
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(16, 12, 16, 14)
-        root.setSpacing(10)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # --- Barra superior de navegación -------------------------------------
-        nav = QHBoxLayout()
-        btn_menu = QPushButton("← Menú Principal")
-        btn_menu.setStyleSheet(self._secondary_btn_style())
-        btn_menu.clicked.connect(on_back_menu)
+        # Columna principal izquierda: cabecera + lienzo 3D + pie
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(28, 24, 24, 24)
+        left_layout.setSpacing(14)
 
-        lbl_header = QLabel("Modo 3D — Reconocedor y Visualizador sobre Esfera")
-        lbl_header.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        lbl_header.setStyleSheet("color: #1e293b; background: transparent;")
+        # Barra superior: Título a la izquierda, botones a la derecha
+        top_bar = QHBoxLayout()
+        header_v = QVBoxLayout()
+        header_v.setSpacing(2)
 
-        btn_to_2d = QPushButton("← Ir a Modo 2D (Plano)")
-        btn_to_2d.setStyleSheet(self._primary_btn_style())
-        btn_to_2d.clicked.connect(on_switch_2d)
+        lbl_title = QLabel("Modo 3D")
+        lbl_title.setStyleSheet("font-size: 20px; font-weight: 700; color: #1e293b;")
+        lbl_sub = QLabel("Superficie esférica")
+        lbl_sub.setStyleSheet("font-size: 13px; color: #64748b;")
+        header_v.addWidget(lbl_title)
+        header_v.addWidget(lbl_sub)
+        top_bar.addLayout(header_v, stretch=1)
 
-        nav.addWidget(btn_menu)
-        nav.addSpacing(10)
-        nav.addWidget(lbl_header, stretch=1)
-        nav.addWidget(btn_to_2d)
-        root.addLayout(nav)
+        # Botones de acción en la esquina superior derecha
+        self.btn_reorient = QPushButton("Centrar esfera")
+        self.btn_reorient.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_reorient.setStyleSheet(self._button_style())
+        self.btn_reorient.clicked.connect(self._reset_camera_and_canvas)
 
-        # --- Cuerpo principal: Izquierda (Esfera 3D) | Derecha (Ranking) ------
-        body = QHBoxLayout()
-        body.setSpacing(14)
-        root.addLayout(body, stretch=1)
+        self.btn_restart = QPushButton("Reiniciar captura")
+        self.btn_restart.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_restart.setStyleSheet(self._button_style())
+        self.btn_restart.clicked.connect(self.reset_capture)
 
-        left_col = QVBoxLayout()
-        left_col.setSpacing(8)
-        body.addLayout(left_col, stretch=1)
+        self.btn_clear = QPushButton("Limpiar lienzo")
+        self.btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear.setStyleSheet(self._button_style())
+        self.btn_clear.clicked.connect(self.reset_capture)
 
+        top_bar.addWidget(self.btn_reorient)
+        top_bar.addWidget(self.btn_restart)
+        top_bar.addWidget(self.btn_clear)
+        left_layout.addLayout(top_bar)
+
+        # Contenedor de la esfera 3D
         sphere_frame = QFrame()
         sphere_frame.setObjectName("SphereViewportFrame")
         sphere_frame.setStyleSheet(
-            "QFrame#SphereViewportFrame { background-color: #e2e8f0; border: 1px solid #cbd5e1; border-radius: 8px; }"
+            "QFrame#SphereViewportFrame { background-color: #ffffff; border: 1.5px solid #e2e8f0; border-radius: 12px; }"
         )
         sf_layout = QVBoxLayout(sphere_frame)
-        sf_layout.setContentsMargins(2, 2, 2, 2)
+        sf_layout.setContentsMargins(4, 4, 4, 4)
         self.canvas3d = SphereCanvas3D(
             extractor=self.extractor,
             on_strokes_changed=self._evaluate_realtime,
         )
         sf_layout.addWidget(self.canvas3d)
-        left_col.addWidget(sphere_frame, stretch=1)
+        left_layout.addWidget(sphere_frame, stretch=1)
 
+        # Pie inferior
         self.lbl_obs = QLabel(
-            "Clic izquierdo + arrastrar sobre la esfera: dibujar trazo  |  "
-            "Clic derecho + arrastrar (o rueda): rotar y hacer zoom."
+            "Mantén presionado el clic izquierdo para trazar sobre la esfera. "
+            "Clic derecho o rueda para rotar y zoom."
         )
-        self.lbl_obs.setWordWrap(True)
-        self.lbl_obs.setFont(QFont("Segoe UI", 9))
-        self.lbl_obs.setStyleSheet(
-            "background-color: #ffffff; border: 1px solid #d1d5db; border-radius: 6px; "
-            "padding: 6px 10px; color: #475569;"
+        self.lbl_obs.setStyleSheet("font-size: 12px; color: #64748b;")
+        left_layout.addWidget(self.lbl_obs)
+
+        root.addWidget(left_widget, stretch=1)
+
+        # Panel lateral derecho de ranking
+        self.ranking_panel = RankingPanel(self)
+        root.addWidget(self.ranking_panel)
+
+    def _button_style(self) -> str:
+        return (
+            "QPushButton { "
+            "background-color: #ffffff; "
+            "border: 1px solid #cbd5e1; "
+            "border-radius: 6px; "
+            "padding: 7px 14px; "
+            "font-size: 12px; "
+            "font-weight: 500; "
+            "color: #334155; "
+            "} "
+            "QPushButton:hover { "
+            "background-color: #f1f5f9; "
+            "border-color: #94a3b8; "
+            "}"
         )
-        left_col.addWidget(self.lbl_obs)
 
-        ctrl_row = QHBoxLayout()
-        ctrl_row.setSpacing(8)
-
-        self.btn_clear = QPushButton("Limpiar Lienzo")
-        self.btn_clear.setStyleSheet(self._danger_btn_style())
-        self.btn_clear.clicked.connect(self.reset_capture)
-
-        self.btn_restart = QPushButton("Reiniciar Captura")
-        self.btn_restart.setStyleSheet(self._primary_btn_style())
-        self.btn_restart.clicked.connect(self.reset_capture)
-
-        self.btn_undo = QPushButton("Deshacer Sub-trazo")
-        self.btn_undo.setStyleSheet(self._secondary_btn_style())
-        self.btn_undo.clicked.connect(self.canvas3d.undo_substroke)
-
-        self.btn_reorient = QPushButton("Centrar Esfera")
-        self.btn_reorient.setStyleSheet(self._secondary_btn_style())
-        self.btn_reorient.clicked.connect(self.canvas3d.reset_camera_view)
-
-        self.chk_rotate = QCheckBox("Rotar con clic izq.")
-        self.chk_rotate.setStyleSheet("color: #1e293b;")
-        self.chk_rotate.toggled.connect(self._on_toggle_rotate_mode)
-
-        self.chk_proj = QCheckBox("Proyección geodésica")
-        self.chk_proj.setChecked(True)
-        self.chk_proj.setStyleSheet("color: #1e293b; font-weight: bold;")
-        self.chk_proj.toggled.connect(self._on_toggle_projection)
-
-        ctrl_row.addWidget(self.btn_clear)
-        ctrl_row.addWidget(self.btn_restart)
-        ctrl_row.addWidget(self.btn_undo)
-        ctrl_row.addWidget(self.btn_reorient)
-        ctrl_row.addStretch(1)
-        ctrl_row.addWidget(self.chk_rotate)
-        ctrl_row.addWidget(self.chk_proj)
-        left_col.addLayout(ctrl_row)
-
-        # Panel derecho con ancho fijo para que al maximizar no se estire ni oculte letras
-        self.ranking_panel = RankingPanel(title="Clasificación 3D — P(Carácter | O₁:ₜ)")
-        body.addWidget(self.ranking_panel, stretch=0)
-        self.ranking_panel.reset_ranking()
+    def _reset_camera_and_canvas(self) -> None:
+        self.canvas3d.reset_camera_view()
 
     def reset_capture(self) -> None:
         """Cierra la captura actual en 3D y limpia la esfera."""
         self.canvas3d.clear_strokes()
-        self.ranking_panel.reset_ranking()
+        self.ranking_panel.reset()
 
     def _on_toggle_rotate_mode(self, checked: bool) -> None:
         self.canvas3d.rotate_mode = checked
