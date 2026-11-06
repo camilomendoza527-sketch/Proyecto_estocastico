@@ -204,3 +204,20 @@ def test_letter_guide_view(qapp):
     guia.btn_restart.click()
     assert canvas._show_anim is True
 
+    # Probar botón de pausar / reanudar
+    guia.btn_play_pause.click()
+    assert canvas._is_paused is True
+    assert "Reanudar" in guia.btn_play_pause.text()
+
+    guia.btn_play_pause.click()
+    assert canvas._is_paused is False
+    assert "Pausar" in guia.btn_play_pause.text()
+
+    # Probar ciclado de velocidad (1x -> 0.5x -> 1.5x -> 1x)
+    guia.btn_speed.click()
+    assert canvas._speed_multiplier == 0.5
+    guia.btn_speed.click()
+    assert canvas._speed_multiplier == 1.5
+    guia.btn_speed.click()
+    assert canvas._speed_multiplier == 1.0
+
