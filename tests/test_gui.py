@@ -124,6 +124,8 @@ def test_view3d_mouse_raycast_drawing_and_projection(qapp):
 
     assert len(canvas.strokes) == 1
     assert len(canvas.strokes[0]) >= 10
+    # El trazo fue hacia abajo en pantalla (y_px creciente de 240 a 360), por lo que en 3D debe bajar en Z
+    assert canvas.strokes[0][-1][2] < canvas.strokes[0][0][2]
     assert len(canvas.projected_strokes) >= 1
     assert v3d.ranking_panel.lbl_top_char.text() != "—"
 

@@ -220,13 +220,22 @@ def test_3d_slerp_arc_and_densify_deforms_along_sphere_surface():
     assert len(dense) > len(poly) * 15
     np.testing.assert_allclose(np.linalg.norm(dense, axis=1), r, atol=1e-9)
 
-    # build_spherical_ribbon_mesh genera triángulos tangentes a la esfera de radio r
+    # build_spherical_ribbon_mesh genera triángulos con relieve 3D y colores sombreados sobre la esfera
     ribbon = fx3.build_spherical_ribbon_mesh(poly, radius=r, half_width_rad=0.02, max_angle_step=0.03)
     assert ribbon is not None
-    verts, faces = ribbon
+    verts, faces, colors = ribbon
     assert verts.shape[1] == 3
     assert faces.shape[1] == 3
-    np.testing.assert_allclose(np.linalg.norm(verts, axis=1), r, rtol=1e-5)
+    assert colors.shape == (len(verts), 4)
+    # Bordes a r * 1.002 y cresta central a r * 1.016
+    np.testing.assert_allclose(np.linalg.norm(verts[0::3], axis=1), r * 1.002, rtol=1e-4)
+    np.testing.assert_allclose(np.linalg.norm(verts[1::3], axis=1), r * 1.016, rtol=1e-4)
+
+    # Verificar que mover hacia arriba en pantalla (v < 0) sube en Z (+Z_cam > 0), NUNCA se invierte hacia abajo
+    pt_up = fx3.map_screen_delta_to_sphere(u=0.0, v=-0.4, camera_rotation=(0.0, 0.0), radius=r)
+    pt_down = fx3.map_screen_delta_to_sphere(u=0.0, v=+0.4, camera_rotation=(0.0, 0.0), radius=r)
+    assert pt_up[2] > 0.5 * r
+    assert pt_down[2] < -0.5 * r
 
     # map_screen_delta_to_sphere curva un trazo horizontal alto (v != 0) sobre el paralelo esférico
     us = np.linspace(-0.6, 0.6, 15)

@@ -957,24 +957,20 @@ class FeatureExtractor3D(FeatureExtractor):
         v: float,
         camera_rotation: CameraOrientation = None,
         radius: float = 1.0,
-        angular_gain: float = 1.45,
+        angular_gain: float = 1.15,
     ) -> np.ndarray | None:
         """Mapea coordenadas normalizadas de pantalla (u, v) ∈ [-1, 1]² a la esfera S²
-        mediante parametrización esférica (longitud Δφ, latitud Δθ) o mapa exponencial.
+        mediante parametrización esférica (longitud Δφ, latitud Δθ).
 
-        A diferencia de un ray-cast ortográfico/perspectivo directo (donde mover el ratón
-        horizontalmente en pantalla produce en la vista de cámara una línea 2D recta sin
-        curvatura aparente), esta parametrización hace que un trazo horizontal del ratón
-        siga el paralelo de latitud constante θ y un trazo vertical siga el meridiano φ.
-        Así, cuando el usuario traza fuera del ecuador o cerca de los polos/bordes del
-        balón, el trazo se curva y deforma tridimensionalmente en pantalla tal como ocurre
-        al dibujar sobre un balón físico real.
+        Convención de signos:
+            - u > 0: derecha en pantalla  → φ crece (+Y_cam)
+            - v > 0: abajo en pantalla    → θ crece desde π/2 hacia π (-Z_cam, sur)
+            - v < 0: arriba en pantalla   → θ decrece desde π/2 hacia 0 (+Z_cam, norte)
 
         Ecuaciones:
-            r_uv = √(u² + v²)
-            Si r_uv > 1.05: fuera del disco esférico visible (None).
-            Δφ = u · α_gain · (π / 2)        (desplazamiento longitudinal en rad)
-            Δθ = -v · α_gain · (π / 2)       (desplazamiento latitudinal desde el ecuador)
+            Si u² + v² > 1.10: fuera del disco esférico visible (None).
+            Δφ = u · α_gain · (π / 2)
+            Δθ = +v · α_gain · (π / 2)
             θ = clip(π/2 + Δθ, 0.08, π - 0.08)
             φ = clip(Δφ, -0.48·π, 0.48·π)
             p_cam = R · (sin θ cos φ, sin θ sin φ, cos θ)
@@ -984,7 +980,7 @@ class FeatureExtractor3D(FeatureExtractor):
             return None
         half_pi = 0.5 * np.pi
         dphi = float(np.clip(u * angular_gain * half_pi, -0.48 * np.pi, 0.48 * np.pi))
-        dtheta = float(-v * angular_gain * half_pi)
+        dtheta = float(v * angular_gain * half_pi)
         theta = float(np.clip(half_pi + dtheta, 0.08, np.pi - 0.08))
         phi = dphi
 
@@ -999,18 +995,18 @@ class FeatureExtractor3D(FeatureExtractor):
     def build_spherical_ribbon_mesh(
         points: np.ndarray,
         radius: float = 1.0,
-        half_width_rad: float = 0.018,
-        max_angle_step: float = 0.015,
-    ) -> tuple[np.ndarray, np.ndarray] | None:
-        """Construye una malla 3D de cinta tangente (vértices y caras triangulares) adherida a S².
+        half_width_rad: float = 0.022,
+        max_angle_step: float = 0.014,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """Construye una malla 3D de cinta en relieve sobre S² con sombreado de profundidad.
 
-        A diferencia de `gl.GLLinePlotItem` (que OpenGL dibuja con grosor constante en píxeles 2D
-        sin escorzo ni deformación de perspectiva), esta cinta está formada por triángulos 3D
-        cuyo ancho físico es tangente a la superficie esférica (b̂_i = n̂_i × t̂_i).
-        Por tanto:
-        1. Cerca del centro del balón se ve ancha y frontal.
-        2. Hacia los bordes/limbo del balón se estrecha y comprime por el escorzo 3D real.
-        3. Se curva siguiendo la curvatura gaussiana K = 1/R² de la esfera.
+        Devuelve (verts, faces, vertex_colors) donde:
+        - El centro de la cinta (cresta) se eleva a r_crest = 1.016·R con azul brillante,
+          mientras los bordes laterales apoyan exactamente sobre la esfera (1.003·R) en azul
+          profundo. Esta sección transversal convexa 3D genera volumen real sobre el balón.
+        - Además, aplica sombreado de profundidad esférica (Lambertiano radial + caída hacia
+          el limbo) para que las zonas cercanas al centro del balón brillen con relieve y las
+          zonas que se curvan hacia el borde se atenúen tridimensionalmente.
         """
         pts = FeatureExtractor3D.densify_spherical_polyline(
             points, radius=radius, max_angle_step=max_angle_step
@@ -1027,9 +1023,7 @@ class FeatureExtractor3D(FeatureExtractor):
         tangents[:-1] = pts[1:] - pts[:-1]
         tangents[-1] = tangents[-2]
         t_norms = np.linalg.norm(tangents, axis=1, keepdims=True)
-        # Fallback si dos puntos consecutivos coinciden
-        valid = (t_norms[:, 0] > 1e-10)
-        if not np.any(valid):
+        if not np.any(t_norms[:, 0] > 1e-10):
             return None
         tangents = tangents / np.maximum(t_norms, 1e-12)
 
@@ -1039,26 +1033,62 @@ class FeatureExtractor3D(FeatureExtractor):
         binormals = binormals / np.maximum(b_norms, 1e-12)
 
         w = float(radius) * float(half_width_rad)
+        r_edge = float(radius) * 1.002
+        r_crest = float(radius) * 1.016
+
         left_v = pts + w * binormals
         right_v = pts - w * binormals
-        # Reproyectar ambos bordes exactamente a la capa esférica de radio `radius`
-        left_v = left_v * (radius / np.maximum(np.linalg.norm(left_v, axis=1, keepdims=True), 1e-12))
-        right_v = right_v * (radius / np.maximum(np.linalg.norm(right_v, axis=1, keepdims=True), 1e-12))
+        left_v = left_v * (r_edge / np.maximum(np.linalg.norm(left_v, axis=1, keepdims=True), 1e-12))
+        right_v = right_v * (r_edge / np.maximum(np.linalg.norm(right_v, axis=1, keepdims=True), 1e-12))
+        center_v = normals * r_crest
 
-        # Intercalar vértices [L_0, R_0, L_1, R_1, ..., L_{m-1}, R_{m-1}]
-        verts = np.empty((2 * m, 3), dtype=np.float32)
-        verts[0::2] = left_v
-        verts[1::2] = right_v
+        # 3 vértices por paso m: [Left_i, Center_i, Right_i] -> relieve 3D de dos faldones
+        verts = np.empty((3 * m, 3), dtype=np.float32)
+        verts[0::3] = left_v
+        verts[1::3] = center_v
+        verts[2::3] = right_v
+
+        # Iluminación direccional 3D (luz frontal-superior derecha) para dar profundidad real
+        light_dir = np.array([0.82, 0.28, 0.50], dtype=float)
+        light_dir /= np.linalg.norm(light_dir)
+        lambert = np.clip(normals @ light_dir, 0.15, 1.0)  # (m,)
+
+        colors = np.empty((3 * m, 4), dtype=np.float32)
+        # Bordes (sombra lateral del relieve)
+        edge_r = 0.05 + 0.10 * lambert
+        edge_g = 0.16 + 0.24 * lambert
+        edge_b = 0.48 + 0.38 * lambert
+        # Cresta central (brillo volumétrico elevado)
+        crest_r = 0.14 + 0.22 * lambert
+        crest_g = 0.38 + 0.36 * lambert
+        crest_b = 0.72 + 0.28 * lambert
+
+        colors[0::3, 0] = edge_r
+        colors[0::3, 1] = edge_g
+        colors[0::3, 2] = edge_b
+        colors[0::3, 3] = 0.96
+
+        colors[1::3, 0] = crest_r
+        colors[1::3, 1] = crest_g
+        colors[1::3, 2] = crest_b
+        colors[1::3, 3] = 1.0
+
+        colors[2::3, 0] = edge_r
+        colors[2::3, 1] = edge_g
+        colors[2::3, 2] = edge_b
+        colors[2::3, 3] = 0.96
 
         idx = np.arange(m - 1, dtype=np.int32)
-        v0 = 2 * idx
-        v1 = 2 * idx + 1
-        v2 = 2 * idx + 2
-        v3 = 2 * idx + 3
-        faces_a = np.column_stack([v0, v1, v2])
-        faces_b = np.column_stack([v1, v3, v2])
-        faces = np.vstack([faces_a, faces_b]).astype(np.int32)
-        return verts, faces
+        l0, c0, r0 = 3 * idx, 3 * idx + 1, 3 * idx + 2
+        l1, c1, r1 = 3 * (idx + 1), 3 * (idx + 1) + 1, 3 * (idx + 1) + 2
+
+        faces = np.vstack([
+            np.column_stack([l0, c0, l1]),
+            np.column_stack([c0, c1, l1]),
+            np.column_stack([c0, r0, c1]),
+            np.column_stack([r0, r1, c1]),
+        ]).astype(np.int32)
+        return verts, faces, colors
 
     @staticmethod
     def intersect_ray_sphere(

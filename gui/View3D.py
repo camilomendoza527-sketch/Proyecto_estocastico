@@ -232,41 +232,40 @@ class SphereCanvas3D(gl.GLViewWidget):
             self.removeItem(item)
         self._stroke_items.clear()
 
-        r_lift = self.radius * 1.006
+        r_lift = self.radius * 1.005
         for idx, stroke_pts in enumerate(self.strokes):
             if not stroke_pts:
                 continue
             raw_pts = np.vstack(stroke_pts)
             if len(raw_pts) == 1:
-                p_single = self.extractor.densify_spherical_polyline(raw_pts, radius=r_lift)
+                p_single = self.extractor.densify_spherical_polyline(raw_pts, radius=r_lift * 1.012)
                 dot = gl.GLScatterPlotItem(
                     pos=p_single, color=(0.09, 0.27, 0.78, 1.0), size=9.0, pxMode=True
                 )
                 self.addItem(dot)
                 self._stroke_items.append(dot)
             else:
-                # 1. Cinta tangente 3D (GLMeshItem) que sufre escorzo y deformación de anchura sobre la esfera
+                # 1. Cinta 3D en relieve con sombreado de profundidad esférica (GLMeshItem con vertexColors)
                 ribbon = self.extractor.build_spherical_ribbon_mesh(
-                    raw_pts, radius=r_lift, half_width_rad=0.017, max_angle_step=0.012
+                    raw_pts, radius=r_lift, half_width_rad=0.022, max_angle_step=0.012
                 )
                 if ribbon is not None:
-                    verts, faces = ribbon
-                    md_ribbon = gl.MeshData(vertexes=verts, faces=faces)
+                    verts, faces, v_colors = ribbon
+                    md_ribbon = gl.MeshData(vertexes=verts, faces=faces, vertexColors=v_colors)
                     ribbon_item = gl.GLMeshItem(
                         meshdata=md_ribbon,
-                        smooth=False,
-                        color=(0.09, 0.27, 0.78, 0.96),
-                        glOptions="translucent",
+                        smooth=True,
+                        glOptions="opaque",
                     )
                     self.addItem(ribbon_item)
                     self._stroke_items.append(ribbon_item)
 
-                # 2. Contorno central antialias sobre el arco geodésico (SLERP)
+                # 2. Cresta central brillante antialias sobre el lomo elevado del trazo
                 curved_pts = self.extractor.densify_spherical_polyline(
-                    raw_pts, radius=r_lift * 1.001, max_angle_step=0.012
+                    raw_pts, radius=r_lift * 1.013, max_angle_step=0.012
                 )
                 line = gl.GLLinePlotItem(
-                    pos=curved_pts, color=(0.07, 0.22, 0.68, 1.0), width=2.8, antialias=True
+                    pos=curved_pts, color=(0.18, 0.45, 0.92, 0.90), width=2.2, antialias=True
                 )
                 self.addItem(line)
                 self._stroke_items.append(line)
@@ -276,7 +275,7 @@ class SphereCanvas3D(gl.GLViewWidget):
                 p0 = self.strokes[idx - 1][-1]
                 p1 = stroke_pts[0]
                 arc_pts = self.extractor.slerp_arc(
-                    p0, p1, radius=r_lift, max_angle_step=0.04
+                    p0, p1, radius=r_lift * 1.012, max_angle_step=0.04
                 )
                 jump_dots = gl.GLScatterPlotItem(
                     pos=arc_pts, color=(0.85, 0.46, 0.02, 0.90), size=4.5, pxMode=True
@@ -294,25 +293,25 @@ class SphereCanvas3D(gl.GLViewWidget):
             self.update()
             return
 
-        r_lift = self.radius * 1.009
+        r_lift = self.radius * 1.008
         for p_stroke in self.projected_strokes:
             if len(p_stroke) < 2:
                 continue
             lifted_nodes = self.extractor.densify_spherical_polyline(
-                p_stroke, radius=r_lift, max_angle_step=10.0  # conservar nodos originales a radio r_lift
+                p_stroke, radius=r_lift * 1.012, max_angle_step=10.0  # conservar nodos originales a radio r_lift
             )
             curved_proj = self.extractor.densify_spherical_polyline(
-                p_stroke, radius=r_lift, max_angle_step=0.018
+                p_stroke, radius=r_lift * 1.012, max_angle_step=0.018
             )
             proj_ribbon = self.extractor.build_spherical_ribbon_mesh(
-                p_stroke, radius=r_lift, half_width_rad=0.011, max_angle_step=0.018
+                p_stroke, radius=r_lift, half_width_rad=0.012, max_angle_step=0.018
             )
             if proj_ribbon is not None:
-                verts, faces = proj_ribbon
+                verts, faces, _ = proj_ribbon
                 md_proj = gl.MeshData(vertexes=verts, faces=faces)
                 mesh_item = gl.GLMeshItem(
                     meshdata=md_proj,
-                    smooth=False,
+                    smooth=True,
                     color=(0.09, 0.64, 0.29, 0.42),
                     glOptions="translucent",
                 )
