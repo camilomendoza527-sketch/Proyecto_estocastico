@@ -105,6 +105,10 @@ class RecognizerCanvas2D(QFrame):
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if self._current_stroke is not None and (event.buttons() & Qt.MouseButton.LeftButton):
             pos = event.position()
+            if self._current_stroke:
+                lx, ly = self._current_stroke[-1]
+                if (pos.x() - lx) ** 2 + (pos.y() - ly) ** 2 < 2.25:
+                    return
             self._current_stroke.append((pos.x(), pos.y()))
             self.on_strokes_changed()
             self.update()

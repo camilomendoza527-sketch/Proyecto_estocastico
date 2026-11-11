@@ -183,3 +183,35 @@ def test_baum_welch_convergence_increases_likelihood():
     # La verosimilitud debe ser monótonamente creciente (o casi idéntica por tolerancia)
     assert history[-1] >= history[0]
 
+
+def test_length_deviation_penalty_shifts_probability():
+    """Verifica que superar la cantidad de puntos esperada de una letra penalice su probabilidad."""
+    pi = np.array([1.0, 0.0])
+    A = np.array([[0.8, 0.2], [0.0, 1.0]])
+    B = np.array([[0.5, 0.5], [0.5, 0.5]])
+
+    # Dos modelos con las mismas matrices A y B, pero 'a' espera longitud corta (35) y 'q' larga (65)
+    hmm_short = HMM(
+        letter="a", n_states=2, n_symbols=2, A=A, B=B, pi=pi,
+        expected_length=35.0, length_std=4.0
+    )
+    hmm_long = HMM(
+        letter="q", n_states=2, n_symbols=2, A=A, B=B, pi=pi,
+        expected_length=65.0, length_std=5.0
+    )
+    clf = HMMClassifier({"a": hmm_short, "q": hmm_long})
+
+    # Con 35 puntos, ninguna se pasa del umbral superior -> probabilidad empatada (50% y 50%)
+    obs_short = [0] * 35
+    res_short = dict((c, p) for c, p, _ in clf.classify(obs_short))
+    assert pytest.approx(res_short["a"], abs=1e-3) == 0.5
+    assert pytest.approx(res_short["q"], abs=1e-3) == 0.5
+
+    # Con 60 puntos, 'a' excede ampliamente su longitud normal (35 + 1.5*4 = 41),
+    # por lo que 'a' se desvía/penaliza y 'q' domina (> 99%)
+    obs_long = [0] * 60
+    res_long = dict((c, p) for c, p, _ in clf.classify(obs_long))
+    assert res_long["q"] > 0.99
+    assert res_long["a"] < 0.01
+
+

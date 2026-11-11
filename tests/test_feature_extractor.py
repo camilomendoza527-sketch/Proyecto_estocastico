@@ -199,3 +199,26 @@ def test_3d_geodesic_resample_and_prefix():
         np.testing.assert_array_equal(pre, full[: len(pre)])
 
 
+def test_3d_slerp_arc_and_densify_deforms_along_sphere_surface():
+    """Verifica que los trazos sobre la esfera sigan arcos geodésicos (SLERP) y no cuerdas rectas."""
+    fx3 = FeatureExtractor3D(K=16)
+    r = 2.0
+    # Dos puntos separados 90 grados sobre el ecuador: (r, 0, 0) y (0, r, 0)
+    p0 = np.array([r, 0.0, 0.0])
+    p1 = np.array([0.0, r, 0.0])
+
+    # Una cuerda recta pasaría por (r/2, r/2, 0) con norma r/sqrt(2) ≈ 1.414 < 2.0
+    # Pero slerp_arc debe mantener todos los puntos exactamente sobre la superficie de radio r
+    arc = fx3.slerp_arc(p0, p1, radius=r, max_angle_step=0.02)
+    assert len(arc) >= 40
+    radii = np.linalg.norm(arc, axis=1)
+    np.testing.assert_allclose(radii, r, atol=1e-9)
+
+    # densify_spherical_polyline sobre polilínea de 3 vértices
+    poly = np.array([[r, 0.0, 0.0], [0.0, r, 0.0], [0.0, 0.0, r]])
+    dense = fx3.densify_spherical_polyline(poly, radius=r, max_angle_step=0.03)
+    assert len(dense) > len(poly) * 15
+    np.testing.assert_allclose(np.linalg.norm(dense, axis=1), r, atol=1e-9)
+
+
+

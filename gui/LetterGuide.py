@@ -208,6 +208,16 @@ class StrokeDemoCanvas(QWidget):
         """Ajusta el multiplicador de velocidad (1.0 = normal ~2.8s, 0.5 = lento ~5.5s, 1.5 = rápido)."""
         self._speed_multiplier = max(0.2, float(mult))
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._show_anim and not self._is_paused and not self._anim_timer.isActive():
+            self._anim_timer.start(20)
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        if self._anim_timer.isActive():
+            self._anim_timer.stop()
+
     def _on_anim_tick(self) -> None:
         if not self._show_anim or self._is_paused:
             return

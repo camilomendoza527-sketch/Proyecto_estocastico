@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import PROJECT_ROOT, get_config
-from training.augment import canonical_unit_strokes
 
 
 def _load_canonical_data() -> dict[str, dict]:
@@ -58,13 +57,7 @@ def build_handwritten_glyph_pixmap(letter: str, color: QColor, w: int = 24, h: i
     span_y = h - 2.0 * pad_y
 
     glyph_info = _GLYPH_CACHE.get(letter)
-    if glyph_info and "strokes" in glyph_info:
-        strokes = glyph_info["strokes"]
-    else:
-        try:
-            strokes = canonical_unit_strokes(letter)
-        except Exception:
-            strokes = []
+    strokes = glyph_info.get("strokes", []) if glyph_info else []
 
     pen = QPen(color, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
     painter.setPen(pen)
@@ -137,9 +130,13 @@ class _LetterRankRow(QFrame):
         self.lbl_pct.setStyleSheet("font-size: 11px; font-weight: 500; color: #64748b;")
         layout.addWidget(self.lbl_pct)
 
+        self._is_highlighted: bool | None = None
         self.set_highlight(False)
 
     def set_highlight(self, is_top: bool) -> None:
+        if self._is_highlighted is is_top:
+            return
+        self._is_highlighted = is_top
         if is_top:
             self.setStyleSheet(
                 "QFrame { background-color: #e6f4ea; border-radius: 6px; border: none; }"
@@ -270,16 +267,19 @@ class RankingPanel(QFrame):
             self.lbl_top_val.setText("Esperando trazo")
             self.lbl_top_val.setStyleSheet("font-size: 14px; font-weight: 700; color: #1e293b; padding-left: 4px;")
 
-        # Reordenar las filas en el layout según el ranking
-        for rank_idx, item in enumerate(ranking):
-            letter = item[0]
-            prob = float(item[1])
-            row = self._rows_by_char.get(letter)
-            if row is not None:
-                val = int(round(prob * 1000))
-                row.bar.setValue(val)
-                row.lbl_pct.setText(f"{prob * 100.0:4.1f}%")
-                is_top = (rank_idx == 0 and n_obs > 0 and prob > 0.05)
-                row.set_highlight(is_top)
-                self.rows_layout.removeWidget(row)
-                self.rows_layout.insertWidget(rank_idx, row)
+        # Reordenar las filas en el layout según el ranking (desactivar repintados intermedios)
+        self.setUpdatesEnabled(False)
+        try:
+            for rank_idx, item in enumerate(ranking):
+                letter = item[0]
+                prob = float(item[1])
+                row = self._rows_by_char.get(letter)
+                if row is not None:
+                    val = int(round(prob * 1000))
+                    row.bar.setValue(val)
+                    row.lbl_pct.setText(f"{prob * 100.0:4.1f}%")
+                    is_top = (rank_idx == 0 and n_obs > 0 and prob > 0.05)
+                    row.set_highlight(is_top)
+                    self.rows_layout.insertWidget(rank_idx, row)
+        finally:
+            self.setUpdatesEnabled(True)

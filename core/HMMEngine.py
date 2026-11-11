@@ -41,12 +41,37 @@ class HMM:
     A: np.ndarray
     B: np.ndarray
     pi: np.ndarray
+    expected_length: float = 0.0
+    length_std: float = 0.0
 
     def __post_init__(self) -> None:
         self.A = np.asarray(self.A, dtype=np.float64)
         self.B = np.asarray(self.B, dtype=np.float64)
         self.pi = np.asarray(self.pi, dtype=np.float64)
+        self.expected_length = float(self.expected_length)
+        self.length_std = float(self.length_std)
         self._validate_shapes_and_stochastic()
+
+    def length_deviation_penalty(self, n_obs: int) -> float:
+        """Penalización estocástica de duración cuando la longitud T excede el límite de la letra.
+
+        Ecuación:
+            Si T ≤ μ_c + 1.5·σ_c:   penalización = 0
+            Si T > μ_c + 1.5·σ_c:   z = [ T - (μ_c + 1.5·σ_c) ] / max(σ_c, 4.0)
+                                    penalización = 0.5 · z²
+        Así, cuando un trazo sobrepasa la cantidad de puntos normalizados propia de una
+        letra corta (ej. 'a', 'o', 'c', 'i'), su verosimilitud se desvía/penaliza a favor
+        de letras con cola extendida (ej. 'q', 'g', 'p').
+        """
+        if self.expected_length <= 0.0 or n_obs <= 0:
+            return 0.0
+        sigma = max(self.length_std, 4.0)
+        threshold = self.expected_length + 1.5 * sigma
+        if n_obs <= threshold:
+            return 0.0
+        excess = float(n_obs) - threshold
+        z = excess / sigma
+        return 0.5 * (z * z)
 
     def _validate_shapes_and_stochastic(self) -> None:
         """Verifica dimensiones y que las filas sumen 1 (propiedad estocástica)."""
@@ -383,6 +408,12 @@ class HMM:
             if iteration > 0 and abs(history[-1] - history[-2]) < tol:
                 break
 
+        # Calibración estadística de longitud de trazo (μ_c, σ_c) sobre las secuencias válidas
+        valid_lengths = [len(seq) for seq in sequences if len(seq) > 0]
+        if valid_lengths:
+            self.expected_length = float(np.mean(valid_lengths))
+            self.length_std = float(max(np.std(valid_lengths), 4.0))
+
         return history
 
     # =========================================================================
@@ -460,7 +491,7 @@ class HMM:
     # =========================================================================
     def to_dict(self) -> dict:
         """Convierte los parámetros a un diccionario serializable."""
-        return {
+        d = {
             "letter": self.letter,
             "n_states": self.n_states,
             "n_symbols": self.n_symbols,
@@ -468,6 +499,10 @@ class HMM:
             "B": self.B.tolist(),
             "pi": self.pi.tolist(),
         }
+        if self.expected_length > 0.0:
+            d["expected_length"] = round(self.expected_length, 3)
+            d["length_std"] = round(self.length_std, 3)
+        return d
 
     def save_json(self, path: str | Path) -> None:
         """Guarda los parámetros del modelo en un archivo JSON."""
@@ -486,6 +521,8 @@ class HMM:
             A=np.array(data["A"], dtype=np.float64),
             B=np.array(data["B"], dtype=np.float64),
             pi=np.array(data["pi"], dtype=np.float64),
+            expected_length=float(data.get("expected_length", 0.0)),
+            length_std=float(data.get("length_std", 0.0)),
         )
 
     @classmethod
@@ -528,9 +565,10 @@ class HMMClassifier:
             return [(letter, 1.0 / max(1, len(self.models)), float("-inf")) for letter in self.models]
 
         log_likes: dict[str, float] = {}
+        n_obs = len(observations)
         for letter, model in self.models.items():
             _, _, log_p = model.forward(observations)
-            log_likes[letter] = log_p
+            log_likes[letter] = log_p - model.length_deviation_penalty(n_obs)
 
         max_log = max(log_likes.values())
         if np.isneginf(max_log):

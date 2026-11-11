@@ -885,6 +885,73 @@ class FeatureExtractor3D(FeatureExtractor):
         return [(R * self.spherical_to_cartesian(c)) @ R_cam for c in sph_curves]
 
     @staticmethod
+    def slerp_arc(
+        p0: np.ndarray,
+        p1: np.ndarray,
+        radius: float = 1.0,
+        max_angle_step: float = 0.015,
+    ) -> np.ndarray:
+        """Interpola un arco de círculo máximo (SLERP) denso entre p0 y p1 sobre la esfera de radio R.
+
+        Garantiza que cualquier segmento trazado sobre el balón siga estrictamente
+        la curvatura geodésica de la superficie esférica S², deformándose de forma
+        realista según la perspectiva tridimensional (sin cuerdas rectas que atraviesen
+        el interior de la esfera).
+
+        Ecuación:
+            Ω = arccos( clip(p̂_0 · p̂_1, -1, 1) )
+            m = max(2, ⌈Ω / δ_max⌉ + 1),   t_k = k / (m - 1) ∈ [0, 1]
+            q(t_k) = R · [ sin((1 - t_k)Ω)/sin Ω · p̂_0 + sin(t_k Ω)/sin Ω · p̂_1 ]
+        """
+        a = np.asarray(p0, dtype=float).reshape(3)
+        b = np.asarray(p1, dtype=float).reshape(3)
+        na = float(np.linalg.norm(a))
+        nb = float(np.linalg.norm(b))
+        if na < 1e-12 or nb < 1e-12:
+            return np.vstack([a, b])
+        ua = a / na
+        ub = b / nb
+        dot = float(np.clip(np.dot(ua, ub), -1.0, 1.0))
+        omega = float(np.arccos(dot))
+        if omega < 1e-6:
+            return np.vstack([ua * radius, ub * radius])
+
+        n_steps = max(2, int(np.ceil(omega / max(max_angle_step, 1e-4))) + 1)
+        t = np.linspace(0.0, 1.0, n_steps)[:, None]
+        sin_omega = float(np.sin(omega))
+        if sin_omega > 1e-8:
+            w0 = np.sin((1.0 - t) * omega) / sin_omega
+            w1 = np.sin(t * omega) / sin_omega
+            pts = (w0 * ua + w1 * ub) * radius
+        else:
+            chord = (1.0 - t) * ua + t * ub
+            norms = np.linalg.norm(chord, axis=1, keepdims=True)
+            pts = chord / np.maximum(norms, 1e-12) * radius
+        return pts
+
+    @staticmethod
+    def densify_spherical_polyline(
+        points: np.ndarray,
+        radius: float = 1.0,
+        max_angle_step: float = 0.015,
+    ) -> np.ndarray:
+        """Densifica una polilínea 3D proyectando cada tramo sobre el arco geodésico de S²."""
+        pts = np.asarray(points, dtype=float).reshape(-1, 3)
+        if len(pts) == 0:
+            return pts
+        if len(pts) == 1:
+            n0 = float(np.linalg.norm(pts[0]))
+            return (pts / max(n0, 1e-12)) * radius
+
+        segments: list[np.ndarray] = [pts[:1] * (radius / max(float(np.linalg.norm(pts[0])), 1e-12))]
+        for i in range(len(pts) - 1):
+            arc = FeatureExtractor3D.slerp_arc(
+                pts[i], pts[i + 1], radius=radius, max_angle_step=max_angle_step
+            )
+            segments.append(arc[1:])
+        return np.vstack(segments)
+
+    @staticmethod
     def intersect_ray_sphere(
         ray_origin: np.ndarray, ray_dir: np.ndarray, radius: float = 1.0
     ) -> np.ndarray | None:

@@ -127,6 +127,46 @@ def test_view3d_mouse_raycast_drawing_and_projection(qapp):
     assert len(canvas.projected_strokes) >= 1
     assert v3d.ranking_panel.lbl_top_char.text() != "—"
 
+    # Verificar botón de giro de la esfera (Modo Rotar ON/OFF)
+    assert canvas.rotate_mode is False
+    v3d.btn_rotate_mode.click()
+    assert canvas.rotate_mode is True
+    assert "ON" in v3d.btn_rotate_mode.text()
+
+    # Con rotate_mode activo, arrastrar con clic izquierdo orbita la cámara sin añadir nuevos trazos
+    az_before, el_before = canvas.current_camera_orientation()
+    rot_press = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        QPointF(300.0, 300.0),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    canvas.mousePressEvent(rot_press)
+    rot_move = QMouseEvent(
+        QEvent.Type.MouseMove,
+        QPointF(360.0, 260.0),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    canvas.mouseMoveEvent(rot_move)
+    rot_rel = QMouseEvent(
+        QEvent.Type.MouseButtonRelease,
+        QPointF(360.0, 260.0),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    canvas.mouseReleaseEvent(rot_rel)
+    az_after, el_after = canvas.current_camera_orientation()
+    assert (az_after != az_before) or (el_after != el_before)
+    assert len(canvas.strokes) == 1  # No agregó otro sub-trazo mientras rotaba
+
+    # Desactivar modo rotar
+    v3d.btn_rotate_mode.click()
+    assert canvas.rotate_mode is False
+
     v3d.btn_restart.click()
     assert len(canvas.strokes) == 0
     assert len(canvas.projected_strokes) == 0

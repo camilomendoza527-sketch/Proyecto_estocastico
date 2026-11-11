@@ -22,9 +22,8 @@ from typing import Callable
 import numpy as np
 import pyqtgraph.opengl as gl
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QFont, QVector4D
+from PySide6.QtGui import QVector4D
 from PySide6.QtWidgets import (
-    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -83,38 +82,40 @@ class SphereCanvas3D(gl.GLViewWidget):
 
     def _init_sphere_scene(self) -> None:
         """Crea la malla de la esfera, meridianos/paralelos y el recuadro guía ecuatorial."""
-        md = gl.MeshData.sphere(rows=44, cols=44, radius=self.radius * 0.994)
+        md = gl.MeshData.sphere(rows=56, cols=56, radius=self.radius * 0.994)
         self.sphere_mesh = gl.GLMeshItem(
             meshdata=md,
             smooth=True,
-            color=(0.94, 0.96, 0.98, 1.0),
+            color=(0.93, 0.96, 0.99, 1.0),
             shader="shaded",
             glOptions="opaque",
         )
         self.addItem(self.sphere_mesh)
 
-        # Grilla sutil de paralelos y meridianos
+        # Grilla esférica de paralelos y meridianos (da percepción real de volumen y curvatura 3D)
         r_grid = self.radius * 1.001
-        phis = np.linspace(0.0, 2.0 * np.pi, 72)
-        for theta_deg in (30, 60, 90, 120, 150):
+        phis = np.linspace(0.0, 2.0 * np.pi, 96)
+        for theta_deg in (20, 40, 60, 80, 90, 100, 120, 140, 160):
             th = np.deg2rad(theta_deg)
             pts = r_grid * np.column_stack(
                 [np.sin(th) * np.cos(phis), np.sin(th) * np.sin(phis), np.full_like(phis, np.cos(th))]
             )
-            item = gl.GLLinePlotItem(
-                pos=pts, color=(0.58, 0.64, 0.72, 0.45), width=1.0, antialias=True
-            )
+            is_eq = theta_deg == 90
+            color = (0.42, 0.52, 0.66, 0.65) if is_eq else (0.58, 0.65, 0.75, 0.42)
+            width = 1.5 if is_eq else 1.0
+            item = gl.GLLinePlotItem(pos=pts, color=color, width=width, antialias=True)
             self.addItem(item)
 
-        thetas = np.linspace(0.0, np.pi, 72)
-        for phi_deg in range(0, 180, 30):
+        thetas = np.linspace(0.0, np.pi, 96)
+        for phi_deg in range(0, 180, 20):
             ph = np.deg2rad(phi_deg)
             pts = r_grid * np.column_stack(
                 [np.sin(thetas) * np.cos(ph), np.sin(thetas) * np.sin(ph), np.cos(thetas)]
             )
-            item = gl.GLLinePlotItem(
-                pos=pts, color=(0.58, 0.64, 0.72, 0.45), width=1.0, antialias=True
-            )
+            is_prime = phi_deg in (0, 90)
+            color = (0.42, 0.52, 0.66, 0.60) if is_prime else (0.58, 0.65, 0.75, 0.42)
+            width = 1.4 if is_prime else 1.0
+            item = gl.GLLinePlotItem(pos=pts, color=color, width=width, antialias=True)
             self.addItem(item)
 
         self._update_guide_frame(self.current_camera_orientation())
@@ -201,32 +202,36 @@ class SphereCanvas3D(gl.GLViewWidget):
             self.removeItem(item)
         self._stroke_items.clear()
 
-        r_lift = 1.007
+        r_lift = self.radius * 1.007
         for idx, stroke_pts in enumerate(self.strokes):
             if not stroke_pts:
                 continue
-            pts = np.vstack(stroke_pts) * r_lift
-            if len(pts) == 1:
+            raw_pts = np.vstack(stroke_pts)
+            if len(raw_pts) == 1:
+                p_single = self.extractor.densify_spherical_polyline(raw_pts, radius=r_lift)
                 dot = gl.GLScatterPlotItem(
-                    pos=pts, color=(0.11, 0.31, 0.85, 1.0), size=8.0, pxMode=True
+                    pos=p_single, color=(0.11, 0.31, 0.85, 1.0), size=8.0, pxMode=True
                 )
                 self.addItem(dot)
                 self._stroke_items.append(dot)
             else:
+                # Densificar sobre arcos geodésicos (SLERP) para que el trazo abrace y se deforme con la esfera
+                curved_pts = self.extractor.densify_spherical_polyline(
+                    raw_pts, radius=r_lift, max_angle_step=0.015
+                )
                 line = gl.GLLinePlotItem(
-                    pos=pts, color=(0.11, 0.31, 0.85, 1.0), width=4.0, antialias=True
+                    pos=curved_pts, color=(0.11, 0.31, 0.85, 1.0), width=4.0, antialias=True
                 )
                 self.addItem(line)
                 self._stroke_items.append(line)
 
-            # Puntos naranjas si hubo salto de pluma levantada entre sub-trazos
+            # Puntos naranjas sobre el arco geodésico si hubo salto de pluma levantada entre sub-trazos
             if idx > 0 and self.strokes[idx - 1]:
-                p0 = self.strokes[idx - 1][-1] * r_lift
-                p1 = stroke_pts[0] * r_lift
-                t_vals = np.linspace(0.0, 1.0, 10)[:, None]
-                chord = (1.0 - t_vals) * p0 + t_vals * p1
-                norms = np.linalg.norm(chord, axis=1, keepdims=True)
-                arc_pts = chord * (self.radius * r_lift / np.maximum(norms, 1e-12))
+                p0 = self.strokes[idx - 1][-1]
+                p1 = stroke_pts[0]
+                arc_pts = self.extractor.slerp_arc(
+                    p0, p1, radius=r_lift, max_angle_step=0.04
+                )
                 jump_dots = gl.GLScatterPlotItem(
                     pos=arc_pts, color=(0.85, 0.46, 0.02, 0.90), size=4.5, pxMode=True
                 )
@@ -243,16 +248,21 @@ class SphereCanvas3D(gl.GLViewWidget):
             self.update()
             return
 
-        r_lift = 1.009
+        r_lift = self.radius * 1.009
         for p_stroke in self.projected_strokes:
             if len(p_stroke) < 2:
                 continue
-            lifted = p_stroke * r_lift
+            lifted_nodes = self.extractor.densify_spherical_polyline(
+                p_stroke, radius=r_lift, max_angle_step=10.0  # conservar nodos originales a radio r_lift
+            )
+            curved_proj = self.extractor.densify_spherical_polyline(
+                p_stroke, radius=r_lift, max_angle_step=0.018
+            )
             dots = gl.GLScatterPlotItem(
-                pos=lifted, color=(0.09, 0.64, 0.29, 0.95), size=6.5, pxMode=True
+                pos=lifted_nodes, color=(0.09, 0.64, 0.29, 0.95), size=6.5, pxMode=True
             )
             line = gl.GLLinePlotItem(
-                pos=lifted, color=(0.09, 0.64, 0.29, 0.50), width=2.2, antialias=True
+                pos=curved_proj, color=(0.09, 0.64, 0.29, 0.55), width=2.2, antialias=True
             )
             self.addItem(line)
             self.addItem(dots)
@@ -319,6 +329,15 @@ class SphereCanvas3D(gl.GLViewWidget):
         self._last_mouse_pos = None
         event.accept()
 
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        """Zoom suave sobre la esfera acotado a un rango seguro."""
+        delta = event.angleDelta().y()
+        factor = 0.92 if delta > 0 else 1.08
+        new_dist = float(np.clip(self.opts["distance"] * factor, 1.45 * self.radius, 5.0 * self.radius))
+        self.opts["distance"] = new_dist
+        self.update()
+        event.accept()
+
 
 class View3D(QWidget):
     """Ventana C: Reconocedor y Visualizador 3D (Lienzo Esférico)."""
@@ -358,6 +377,12 @@ class View3D(QWidget):
         top_bar.addLayout(header_v, stretch=1)
 
         # Botones de acción en la esquina superior derecha
+        self.btn_rotate_mode = QPushButton("🔄 Girar esfera: OFF")
+        self.btn_rotate_mode.setCheckable(True)
+        self.btn_rotate_mode.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_rotate_mode.setStyleSheet(self._toggle_button_style(False))
+        self.btn_rotate_mode.toggled.connect(self._on_toggle_rotate_mode)
+
         self.btn_reorient = QPushButton("Centrar esfera")
         self.btn_reorient.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_reorient.setStyleSheet(self._button_style())
@@ -373,6 +398,7 @@ class View3D(QWidget):
         self.btn_clear.setStyleSheet(self._button_style())
         self.btn_clear.clicked.connect(self.reset_capture)
 
+        top_bar.addWidget(self.btn_rotate_mode)
         top_bar.addWidget(self.btn_reorient)
         top_bar.addWidget(self.btn_restart)
         top_bar.addWidget(self.btn_clear)
@@ -424,6 +450,24 @@ class View3D(QWidget):
             "}"
         )
 
+    def _toggle_button_style(self, active: bool) -> str:
+        if active:
+            return (
+                "QPushButton { "
+                "background-color: #0f766e; "
+                "border: 1px solid #0f766e; "
+                "border-radius: 6px; "
+                "padding: 7px 14px; "
+                "font-size: 12px; "
+                "font-weight: 700; "
+                "color: #ffffff; "
+                "} "
+                "QPushButton:hover { "
+                "background-color: #115e59; "
+                "}"
+            )
+        return self._button_style()
+
     def _reset_camera_and_canvas(self) -> None:
         self.canvas3d.reset_camera_view()
 
@@ -434,13 +478,11 @@ class View3D(QWidget):
 
     def _on_toggle_rotate_mode(self, checked: bool) -> None:
         self.canvas3d.rotate_mode = checked
+        self.btn_rotate_mode.setText("🔄 Girar esfera: ON" if checked else "🔄 Girar esfera: OFF")
+        self.btn_rotate_mode.setStyleSheet(self._toggle_button_style(checked))
         self.canvas3d.setCursor(
             Qt.CursorShape.OpenHandCursor if checked else Qt.CursorShape.CrossCursor
         )
-
-    def _on_toggle_projection(self, checked: bool) -> None:
-        self.canvas3d.show_projection = checked
-        self.canvas3d._rebuild_projection_items()
 
     def _evaluate_realtime(self) -> None:
         strokes = self.canvas3d.get_numpy_strokes()
@@ -490,26 +532,3 @@ class View3D(QWidget):
             f"T = {len(symbols)}  |  Proyección '{top_letter}': {len(future_symbols)} pasos  |  {sym_txt}"
         )
 
-    @staticmethod
-    def _primary_btn_style() -> str:
-        return (
-            "QPushButton { background-color: #2563eb; color: #ffffff; border: none; "
-            "border-radius: 6px; padding: 7px 14px; font-weight: bold; } "
-            "QPushButton:hover { background-color: #1d4ed8; }"
-        )
-
-    @staticmethod
-    def _secondary_btn_style() -> str:
-        return (
-            "QPushButton { background-color: #ffffff; color: #1e293b; border: 1px solid #cbd5e1; "
-            "border-radius: 6px; padding: 7px 14px; font-weight: bold; } "
-            "QPushButton:hover { background-color: #f1f5f9; }"
-        )
-
-    @staticmethod
-    def _danger_btn_style() -> str:
-        return (
-            "QPushButton { background-color: #dc2626; color: #ffffff; border: none; "
-            "border-radius: 6px; padding: 7px 14px; font-weight: bold; } "
-            "QPushButton:hover { background-color: #b91c1c; }"
-        )
