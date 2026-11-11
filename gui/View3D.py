@@ -59,18 +59,20 @@ class SphereCanvas3D(gl.GLViewWidget):
         self.rotate_mode: bool = False
         self._last_mouse_pos: QPointF | None = None
 
-        # Orientación de cámara (azimut, elevación) fijada al iniciar el primer trazo
-        self.active_camera_orientation: tuple[float, float] = (0.0, 0.0)
+        # Orientación de cámara (azimut, elevación) fijada al iniciar el primer trazo.
+        # La vista inicial tiene una inclinación sutil (18° de elevación) para que los paralelos y
+        # meridianos muestren de inmediato el volumen 3D y la curvatura real del balón.
+        self.active_camera_orientation: tuple[float, float] = (0.0, 18.0)
 
         self.setMinimumSize(420, 420)
         self.setBackgroundColor("#ffffff")
-        self.opts["distance"] = 2.4 * self.radius
-        self.opts["fov"] = 45
+        self.opts["distance"] = 2.05 * self.radius
+        self.opts["fov"] = 60
         self.opts["azimuth"] = 0.0
-        self.opts["elevation"] = 0.0
+        self.opts["elevation"] = 18.0
         self.setCursor(Qt.CursorShape.CrossCursor)
 
-        self._stroke_items: list[gl.GLLinePlotItem | gl.GLScatterPlotItem] = []
+        self._stroke_items: list[gl.GLLinePlotItem | gl.GLScatterPlotItem | gl.GLMeshItem] = []
         self._proj_items: list[gl.GLLinePlotItem | gl.GLScatterPlotItem] = []
         self._guide_items: list[gl.GLLinePlotItem] = []
 
@@ -137,9 +139,16 @@ class SphereCanvas3D(gl.GLViewWidget):
             self.addItem(line)
             self._guide_items.append(line)
 
-    # --- Intersección rayo-esfera desde coordenadas de pantalla ---------------
+    # --- Intersección y mapeo esférico con deformación de curvatura -----------
     def _screen_to_sphere_point(self, x_px: float, y_px: float) -> np.ndarray | None:
-        """Desproyecta el píxel lógico (x, y) a un rayo 3D y halla su intersección con la esfera."""
+        """Mapea el píxel lógico (x, y) a la esfera S² aplicando deformación esférica real.
+
+        Combina la intersección rayo-esfera de OpenGL con la parametrización de coordenadas
+        esféricas intrínsecas (θ, φ) del marco de cámara. De esta forma, al trazar con el
+        ratón sobre el balón, las líneas rectas del ratón siguen los paralelos y meridianos
+        esféricos y se curvan/deforman visualmente en pantalla según la zona de la esfera
+        donde se dibuje (centro vs bordes/polos), exactamente como al pintar sobre un balón.
+        """
         w = max(1, int(self.width()))
         h = max(1, int(self.height()))
         ndc_x = 2.0 * (float(x_px) / w) - 1.0
@@ -160,7 +169,28 @@ class SphereCanvas3D(gl.GLViewWidget):
         p_near = np.array([near_4.x(), near_4.y(), near_4.z()], dtype=float) / near_4.w()
         p_far = np.array([far_4.x(), far_4.y(), far_4.z()], dtype=float) / far_4.w()
         ray_dir = p_far - p_near
-        return self.extractor.intersect_ray_sphere(p_near, ray_dir, radius=self.radius)
+        hit = self.extractor.intersect_ray_sphere(p_near, ray_dir, radius=self.radius)
+        if hit is None:
+            return None
+
+        # Proyectar el punto de impacto en la base ortonormal de la cámara actual
+        # para obtener las coordenadas tangentes normalizadas (u, v) sobre el disco del balón
+        cam_orient = self.current_camera_orientation()
+        R_cam = self.extractor.build_camera_matrix(cam_orient)
+        hit_cam = (hit / max(float(np.linalg.norm(hit)), 1e-12)) @ R_cam.T
+        u = float(hit_cam[1])   # derecha en pantalla ∈ [-1, 1]
+        v = float(-hit_cam[2])  # abajo en pantalla ∈ [-1, 1]
+
+        # Mapear (u, v) mediante la carta esférica intrínseca (Δφ, Δθ) para que el trazo
+        # se deforme con la curvatura gaussiana real de la esfera al acercarse al borde/polos
+        deformed = self.extractor.map_screen_delta_to_sphere(
+            u=u,
+            v=v,
+            camera_rotation=cam_orient,
+            radius=self.radius,
+            angular_gain=1.15,
+        )
+        return deformed if deformed is not None else hit
 
     # --- Gestión de trazos y renderizado 3D -----------------------------------
     def get_numpy_strokes(self) -> list[np.ndarray]:
@@ -184,12 +214,12 @@ class SphereCanvas3D(gl.GLViewWidget):
             self.on_strokes_changed()
 
     def reset_camera_view(self) -> None:
-        """Reorienta la cámara a la vista frontal estándar."""
+        """Reorienta la cámara a la vista estándar del balón."""
         self.opts["azimuth"] = 0.0
-        self.opts["elevation"] = 0.0
-        self.opts["distance"] = 2.4 * self.radius
+        self.opts["elevation"] = 18.0
+        self.opts["distance"] = 2.05 * self.radius
         if not self.strokes:
-            self.active_camera_orientation = (0.0, 0.0)
+            self.active_camera_orientation = (0.0, 18.0)
             self._update_guide_frame(self.active_camera_orientation)
         self.update()
 
@@ -202,7 +232,7 @@ class SphereCanvas3D(gl.GLViewWidget):
             self.removeItem(item)
         self._stroke_items.clear()
 
-        r_lift = self.radius * 1.007
+        r_lift = self.radius * 1.006
         for idx, stroke_pts in enumerate(self.strokes):
             if not stroke_pts:
                 continue
@@ -210,17 +240,33 @@ class SphereCanvas3D(gl.GLViewWidget):
             if len(raw_pts) == 1:
                 p_single = self.extractor.densify_spherical_polyline(raw_pts, radius=r_lift)
                 dot = gl.GLScatterPlotItem(
-                    pos=p_single, color=(0.11, 0.31, 0.85, 1.0), size=8.0, pxMode=True
+                    pos=p_single, color=(0.09, 0.27, 0.78, 1.0), size=9.0, pxMode=True
                 )
                 self.addItem(dot)
                 self._stroke_items.append(dot)
             else:
-                # Densificar sobre arcos geodésicos (SLERP) para que el trazo abrace y se deforme con la esfera
+                # 1. Cinta tangente 3D (GLMeshItem) que sufre escorzo y deformación de anchura sobre la esfera
+                ribbon = self.extractor.build_spherical_ribbon_mesh(
+                    raw_pts, radius=r_lift, half_width_rad=0.017, max_angle_step=0.012
+                )
+                if ribbon is not None:
+                    verts, faces = ribbon
+                    md_ribbon = gl.MeshData(vertexes=verts, faces=faces)
+                    ribbon_item = gl.GLMeshItem(
+                        meshdata=md_ribbon,
+                        smooth=False,
+                        color=(0.09, 0.27, 0.78, 0.96),
+                        glOptions="translucent",
+                    )
+                    self.addItem(ribbon_item)
+                    self._stroke_items.append(ribbon_item)
+
+                # 2. Contorno central antialias sobre el arco geodésico (SLERP)
                 curved_pts = self.extractor.densify_spherical_polyline(
-                    raw_pts, radius=r_lift, max_angle_step=0.015
+                    raw_pts, radius=r_lift * 1.001, max_angle_step=0.012
                 )
                 line = gl.GLLinePlotItem(
-                    pos=curved_pts, color=(0.11, 0.31, 0.85, 1.0), width=4.0, antialias=True
+                    pos=curved_pts, color=(0.07, 0.22, 0.68, 1.0), width=2.8, antialias=True
                 )
                 self.addItem(line)
                 self._stroke_items.append(line)
@@ -258,11 +304,26 @@ class SphereCanvas3D(gl.GLViewWidget):
             curved_proj = self.extractor.densify_spherical_polyline(
                 p_stroke, radius=r_lift, max_angle_step=0.018
             )
+            proj_ribbon = self.extractor.build_spherical_ribbon_mesh(
+                p_stroke, radius=r_lift, half_width_rad=0.011, max_angle_step=0.018
+            )
+            if proj_ribbon is not None:
+                verts, faces = proj_ribbon
+                md_proj = gl.MeshData(vertexes=verts, faces=faces)
+                mesh_item = gl.GLMeshItem(
+                    meshdata=md_proj,
+                    smooth=False,
+                    color=(0.09, 0.64, 0.29, 0.42),
+                    glOptions="translucent",
+                )
+                self.addItem(mesh_item)
+                self._proj_items.append(mesh_item)
+
             dots = gl.GLScatterPlotItem(
-                pos=lifted_nodes, color=(0.09, 0.64, 0.29, 0.95), size=6.5, pxMode=True
+                pos=lifted_nodes, color=(0.09, 0.64, 0.29, 0.95), size=6.0, pxMode=True
             )
             line = gl.GLLinePlotItem(
-                pos=curved_proj, color=(0.09, 0.64, 0.29, 0.55), width=2.2, antialias=True
+                pos=curved_proj, color=(0.09, 0.64, 0.29, 0.70), width=2.0, antialias=True
             )
             self.addItem(line)
             self.addItem(dots)

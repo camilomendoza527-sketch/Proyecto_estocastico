@@ -951,6 +951,115 @@ class FeatureExtractor3D(FeatureExtractor):
             segments.append(arc[1:])
         return np.vstack(segments)
 
+    def map_screen_delta_to_sphere(
+        self,
+        u: float,
+        v: float,
+        camera_rotation: CameraOrientation = None,
+        radius: float = 1.0,
+        angular_gain: float = 1.45,
+    ) -> np.ndarray | None:
+        """Mapea coordenadas normalizadas de pantalla (u, v) ∈ [-1, 1]² a la esfera S²
+        mediante parametrización esférica (longitud Δφ, latitud Δθ) o mapa exponencial.
+
+        A diferencia de un ray-cast ortográfico/perspectivo directo (donde mover el ratón
+        horizontalmente en pantalla produce en la vista de cámara una línea 2D recta sin
+        curvatura aparente), esta parametrización hace que un trazo horizontal del ratón
+        siga el paralelo de latitud constante θ y un trazo vertical siga el meridiano φ.
+        Así, cuando el usuario traza fuera del ecuador o cerca de los polos/bordes del
+        balón, el trazo se curva y deforma tridimensionalmente en pantalla tal como ocurre
+        al dibujar sobre un balón físico real.
+
+        Ecuaciones:
+            r_uv = √(u² + v²)
+            Si r_uv > 1.05: fuera del disco esférico visible (None).
+            Δφ = u · α_gain · (π / 2)        (desplazamiento longitudinal en rad)
+            Δθ = -v · α_gain · (π / 2)       (desplazamiento latitudinal desde el ecuador)
+            θ = clip(π/2 + Δθ, 0.08, π - 0.08)
+            φ = clip(Δφ, -0.48·π, 0.48·π)
+            p_cam = R · (sin θ cos φ, sin θ sin φ, cos θ)
+            p_world = p_cam · R_cam
+        """
+        if u * u + v * v > 1.10:
+            return None
+        half_pi = 0.5 * np.pi
+        dphi = float(np.clip(u * angular_gain * half_pi, -0.48 * np.pi, 0.48 * np.pi))
+        dtheta = float(-v * angular_gain * half_pi)
+        theta = float(np.clip(half_pi + dtheta, 0.08, np.pi - 0.08))
+        phi = dphi
+
+        st = np.sin(theta)
+        p_cam = float(radius) * np.array(
+            [st * np.cos(phi), st * np.sin(phi), np.cos(theta)], dtype=float
+        )
+        R_cam = self.build_camera_matrix(camera_rotation)
+        return p_cam @ R_cam
+
+    @staticmethod
+    def build_spherical_ribbon_mesh(
+        points: np.ndarray,
+        radius: float = 1.0,
+        half_width_rad: float = 0.018,
+        max_angle_step: float = 0.015,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """Construye una malla 3D de cinta tangente (vértices y caras triangulares) adherida a S².
+
+        A diferencia de `gl.GLLinePlotItem` (que OpenGL dibuja con grosor constante en píxeles 2D
+        sin escorzo ni deformación de perspectiva), esta cinta está formada por triángulos 3D
+        cuyo ancho físico es tangente a la superficie esférica (b̂_i = n̂_i × t̂_i).
+        Por tanto:
+        1. Cerca del centro del balón se ve ancha y frontal.
+        2. Hacia los bordes/limbo del balón se estrecha y comprime por el escorzo 3D real.
+        3. Se curva siguiendo la curvatura gaussiana K = 1/R² de la esfera.
+        """
+        pts = FeatureExtractor3D.densify_spherical_polyline(
+            points, radius=radius, max_angle_step=max_angle_step
+        )
+        m = len(pts)
+        if m < 2:
+            return None
+
+        norms = np.linalg.norm(pts, axis=1, keepdims=True)
+        normals = pts / np.maximum(norms, 1e-12)
+
+        # Vector tangente unitario a lo largo de la curva
+        tangents = np.zeros_like(pts)
+        tangents[:-1] = pts[1:] - pts[:-1]
+        tangents[-1] = tangents[-2]
+        t_norms = np.linalg.norm(tangents, axis=1, keepdims=True)
+        # Fallback si dos puntos consecutivos coinciden
+        valid = (t_norms[:, 0] > 1e-10)
+        if not np.any(valid):
+            return None
+        tangents = tangents / np.maximum(t_norms, 1e-12)
+
+        # Binormal tangente a la superficie esférica: b = normal × tangent
+        binormals = np.cross(normals, tangents)
+        b_norms = np.linalg.norm(binormals, axis=1, keepdims=True)
+        binormals = binormals / np.maximum(b_norms, 1e-12)
+
+        w = float(radius) * float(half_width_rad)
+        left_v = pts + w * binormals
+        right_v = pts - w * binormals
+        # Reproyectar ambos bordes exactamente a la capa esférica de radio `radius`
+        left_v = left_v * (radius / np.maximum(np.linalg.norm(left_v, axis=1, keepdims=True), 1e-12))
+        right_v = right_v * (radius / np.maximum(np.linalg.norm(right_v, axis=1, keepdims=True), 1e-12))
+
+        # Intercalar vértices [L_0, R_0, L_1, R_1, ..., L_{m-1}, R_{m-1}]
+        verts = np.empty((2 * m, 3), dtype=np.float32)
+        verts[0::2] = left_v
+        verts[1::2] = right_v
+
+        idx = np.arange(m - 1, dtype=np.int32)
+        v0 = 2 * idx
+        v1 = 2 * idx + 1
+        v2 = 2 * idx + 2
+        v3 = 2 * idx + 3
+        faces_a = np.column_stack([v0, v1, v2])
+        faces_b = np.column_stack([v1, v3, v2])
+        faces = np.vstack([faces_a, faces_b]).astype(np.int32)
+        return verts, faces
+
     @staticmethod
     def intersect_ray_sphere(
         ray_origin: np.ndarray, ray_dir: np.ndarray, radius: float = 1.0

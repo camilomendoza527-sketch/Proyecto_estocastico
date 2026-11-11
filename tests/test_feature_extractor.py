@@ -220,5 +220,27 @@ def test_3d_slerp_arc_and_densify_deforms_along_sphere_surface():
     assert len(dense) > len(poly) * 15
     np.testing.assert_allclose(np.linalg.norm(dense, axis=1), r, atol=1e-9)
 
+    # build_spherical_ribbon_mesh genera triángulos tangentes a la esfera de radio r
+    ribbon = fx3.build_spherical_ribbon_mesh(poly, radius=r, half_width_rad=0.02, max_angle_step=0.03)
+    assert ribbon is not None
+    verts, faces = ribbon
+    assert verts.shape[1] == 3
+    assert faces.shape[1] == 3
+    np.testing.assert_allclose(np.linalg.norm(verts, axis=1), r, rtol=1e-5)
+
+    # map_screen_delta_to_sphere curva un trazo horizontal alto (v != 0) sobre el paralelo esférico
+    us = np.linspace(-0.6, 0.6, 15)
+    pts_high = np.vstack([
+        fx3.map_screen_delta_to_sphere(u=float(u), v=-0.45, camera_rotation=(0.0, 0.0), radius=r)
+        for u in us
+    ])
+    np.testing.assert_allclose(np.linalg.norm(pts_high, axis=1), r, atol=1e-9)
+    # Al proyectar en el plano de la cámara (Y_cam, Z_cam) con elevación 18°, la altura aparente varía (curva real, no recta 2D)
+    R_view = fx3.build_camera_matrix((0.0, 18.0))
+    cam_pts = pts_high @ R_view.T
+    z_screen = cam_pts[:, 2]
+    assert float(np.max(z_screen) - np.min(z_screen)) > 0.05 * r
+
+
 
 
