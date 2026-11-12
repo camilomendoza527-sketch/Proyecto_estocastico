@@ -12,9 +12,7 @@ Permite al usuario:
 
 from __future__ import annotations
 
-import json
 import math
-from pathlib import Path
 from typing import Sequence
 
 import numpy as np
@@ -29,7 +27,6 @@ from PySide6.QtGui import (
     QPen,
 )
 from PySide6.QtWidgets import (
-    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -39,19 +36,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.config import PROJECT_ROOT, get_config
-
-
-def _load_canonical_glyphs() -> dict[str, dict]:
-    """Carga los glifos canónicos de data/canonical_glyphs.json o un fallback."""
-    path = PROJECT_ROOT / "data" / "canonical_glyphs.json"
-    if path.exists():
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
+from core.config import get_config
+from gui.RankingPanel import load_canonical_glyphs
 
 
 class StrokeDemoCanvas(QWidget):
@@ -253,6 +239,24 @@ class StrokeDemoCanvas(QWidget):
             self.stroke_drawn.emit()
 
     # --- Renderizado de alta definición con QPainter ---------------------------
+    @staticmethod
+    def _draw_stroke_pts(
+        painter: QPainter, pts: np.ndarray, dot_color: QColor, dot_radius: float
+    ) -> None:
+        """Dibuja un sub-trazo (punto aislado o polilínea continua) sobre el QPainter."""
+        if len(pts) == 0:
+            return
+        if len(pts) == 1:
+            painter.setBrush(QBrush(dot_color))
+            painter.drawEllipse(QPointF(pts[0, 0], pts[0, 1]), dot_radius, dot_radius)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+        else:
+            path = QPainterPath()
+            path.moveTo(pts[0, 0], pts[0, 1])
+            for k in range(1, len(pts)):
+                path.lineTo(pts[k, 0], pts[k, 1])
+            painter.drawPath(path)
+
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -299,25 +303,15 @@ class StrokeDemoCanvas(QWidget):
             return np.column_stack([cx + norm_xy[:, 0] * box_side, cy + norm_xy[:, 1] * box_side])
 
         # 1. Traza fantasma en gris tenue (guía base de fondo)
+        ghost_color = QColor("#e2e8f0")
         pen_ghost = QPen(
-            QColor("#e2e8f0"), 7.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin
+            ghost_color, 7.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin
         )
         painter.setPen(pen_ghost)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         for s in self._strokes:
-            if len(s) == 0:
-                continue
-            pts = to_px(s)
-            if len(pts) == 1:
-                painter.setBrush(QBrush(QColor("#e2e8f0")))
-                painter.drawEllipse(QPointF(pts[0, 0], pts[0, 1]), 4.0, 4.0)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-            else:
-                path = QPainterPath()
-                path.moveTo(pts[0, 0], pts[0, 1])
-                for i in range(1, len(pts)):
-                    path.lineTo(pts[i, 0], pts[i, 1])
-                painter.drawPath(path)
+            if len(s) > 0:
+                self._draw_stroke_pts(painter, to_px(s), ghost_color, 4.0)
 
         # 2. Líneas punteadas de desplazamiento entre trazos (vuelo en el aire)
         if len(self._strokes) > 1:
@@ -349,8 +343,9 @@ class StrokeDemoCanvas(QWidget):
                     break
 
             # Pluma para el trazo en verde esmeralda cálido
+            ink_color = QColor("#16a34a")
             pen_ink = QPen(
-                QColor("#16a34a"), 5.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin
+                ink_color, 5.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin
             )
             painter.setPen(pen_ink)
 
@@ -361,26 +356,14 @@ class StrokeDemoCanvas(QWidget):
 
                 # Dibujar los trazos anteriores completos
                 for prev_i in range(target_idx):
-                    pts = to_px(self._strokes[prev_i])
-                    if len(pts) == 1:
-                        painter.setBrush(QBrush(QColor("#16a34a")))
-                        painter.drawEllipse(QPointF(pts[0, 0], pts[0, 1]), 3.5, 3.5)
-                        painter.setBrush(Qt.BrushStyle.NoBrush)
-                    else:
-                        p = QPainterPath()
-                        p.moveTo(pts[0, 0], pts[0, 1])
-                        for k in range(1, len(pts)):
-                            p.lineTo(pts[k, 0], pts[k, 1])
-                        painter.drawPath(p)
+                    self._draw_stroke_pts(painter, to_px(self._strokes[prev_i]), ink_color, 3.5)
 
                 # Dibujar el trazo actual en progreso continuo
                 curr_pts = to_px(self._strokes[target_idx])
                 tau = np.clip((self._elapsed_time - curr_phase["t_start"]) / curr_phase["duration"], 0.0, 1.0)
 
                 if len(curr_pts) == 1:
-                    painter.setBrush(QBrush(QColor("#16a34a")))
-                    painter.drawEllipse(QPointF(curr_pts[0, 0], curr_pts[0, 1]), 3.5, 3.5)
-                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    self._draw_stroke_pts(painter, curr_pts, ink_color, 3.5)
                     current_tip = QPointF(curr_pts[0, 0], curr_pts[0, 1])
                 else:
                     segs = np.linalg.norm(np.diff(curr_pts, axis=0), axis=1)
@@ -392,13 +375,7 @@ class StrokeDemoCanvas(QWidget):
                     frac = (target_dist - cum[idx]) / max(segs[idx], 1e-6)
                     interp_pt = curr_pts[idx] + np.clip(frac, 0.0, 1.0) * (curr_pts[idx + 1] - curr_pts[idx])
 
-                    p = QPainterPath()
-                    p.moveTo(curr_pts[0, 0], curr_pts[0, 1])
-                    for k in range(1, idx + 1):
-                        p.lineTo(curr_pts[k, 0], curr_pts[k, 1])
-                    p.lineTo(interp_pt[0], interp_pt[1])
-                    painter.drawPath(p)
-
+                    self._draw_stroke_pts(painter, np.vstack([curr_pts[: idx + 1], interp_pt]), ink_color, 3.5)
                     current_tip = QPointF(interp_pt[0], interp_pt[1])
                     dx = float(curr_pts[idx + 1, 0] - curr_pts[idx, 0])
                     dy = float(curr_pts[idx + 1, 1] - curr_pts[idx, 1])
@@ -415,23 +392,12 @@ class StrokeDemoCanvas(QWidget):
 
                 # Todos los trazos hasta from_idx están completos
                 for prev_i in range(to_idx):
-                    pts = to_px(self._strokes[prev_i])
-                    if len(pts) == 1:
-                        painter.setBrush(QBrush(QColor("#16a34a")))
-                        painter.drawEllipse(QPointF(pts[0, 0], pts[0, 1]), 3.5, 3.5)
-                        painter.setBrush(Qt.BrushStyle.NoBrush)
-                    else:
-                        p = QPainterPath()
-                        p.moveTo(pts[0, 0], pts[0, 1])
-                        for k in range(1, len(pts)):
-                            p.lineTo(pts[k, 0], pts[k, 1])
-                        painter.drawPath(p)
+                    self._draw_stroke_pts(painter, to_px(self._strokes[prev_i]), ink_color, 3.5)
 
                 # Interpolar posición aérea del lápiz
                 p_from = to_px(self._strokes[from_idx][-1:])
                 p_to = to_px(self._strokes[to_idx][:1])
                 tau = np.clip((self._elapsed_time - curr_phase["t_start"]) / curr_phase["duration"], 0.0, 1.0)
-                # Curva suave ease-in-out
                 tau_smooth = 0.5 - 0.5 * math.cos(math.pi * tau)
                 pos_x = p_from[0, 0] + tau_smooth * (p_to[0, 0] - p_from[0, 0])
                 pos_y = p_from[0, 1] + tau_smooth * (p_to[0, 1] - p_from[0, 1])
@@ -448,17 +414,7 @@ class StrokeDemoCanvas(QWidget):
                 active_badge_idx = -1
                 current_tip = None
                 for s in self._strokes:
-                    pts = to_px(s)
-                    if len(pts) == 1:
-                        painter.setBrush(QBrush(QColor("#16a34a")))
-                        painter.drawEllipse(QPointF(pts[0, 0], pts[0, 1]), 3.5, 3.5)
-                        painter.setBrush(Qt.BrushStyle.NoBrush)
-                    else:
-                        p = QPainterPath()
-                        p.moveTo(pts[0, 0], pts[0, 1])
-                        for k in range(1, len(pts)):
-                            p.lineTo(pts[k, 0], pts[k, 1])
-                        painter.drawPath(p)
+                    self._draw_stroke_pts(painter, to_px(s), ink_color, 3.5)
 
             # Dibujar el puntero del lápiz (estilo visual destacado)
             if current_tip is not None:
@@ -547,7 +503,7 @@ class LetterGuideView(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.cfg = get_config()
-        self.glyphs = _load_canonical_glyphs()
+        self.glyphs = load_canonical_glyphs()
         self.current_letter: str = "a"
         self._buttons: dict[str, QPushButton] = {}
         self._speed_modes: list[tuple[str, float]] = [

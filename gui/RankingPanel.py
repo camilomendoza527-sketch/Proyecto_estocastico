@@ -11,11 +11,11 @@ Diseño idéntico a la referencia visual (Image 2):
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from functools import lru_cache
 from typing import Sequence
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -29,7 +29,9 @@ from PySide6.QtWidgets import (
 from core.config import PROJECT_ROOT, get_config
 
 
-def _load_canonical_data() -> dict[str, dict]:
+@lru_cache(maxsize=1)
+def load_canonical_glyphs() -> dict[str, dict]:
+    """Carga y almacena en caché los glifos canónicos de data/canonical_glyphs.json."""
     path = PROJECT_ROOT / "data" / "canonical_glyphs.json"
     if path.exists():
         try:
@@ -38,9 +40,6 @@ def _load_canonical_data() -> dict[str, dict]:
         except Exception:
             pass
     return {}
-
-
-_GLYPH_CACHE = _load_canonical_data()
 
 
 def build_handwritten_glyph_pixmap(letter: str, color: QColor, w: int = 24, h: int = 30) -> QPixmap:
@@ -56,7 +55,7 @@ def build_handwritten_glyph_pixmap(letter: str, color: QColor, w: int = 24, h: i
     span_x = w - 2.0 * pad_x
     span_y = h - 2.0 * pad_y
 
-    glyph_info = _GLYPH_CACHE.get(letter)
+    glyph_info = load_canonical_glyphs().get(letter)
     strokes = glyph_info.get("strokes", []) if glyph_info else []
 
     pen = QPen(color, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
@@ -170,10 +169,6 @@ class RankingPanel(QFrame):
             "RankingPanel { background-color: #ffffff; border-left: 1px solid #e2e8f0; }"
         )
 
-        global _GLYPH_CACHE
-        if not _GLYPH_CACHE:
-            _GLYPH_CACHE = _load_canonical_data()
-
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(14, 16, 14, 16)
         root_layout.setSpacing(8)
@@ -183,18 +178,10 @@ class RankingPanel(QFrame):
         self.lbl_top_val.setStyleSheet("font-size: 14px; font-weight: 700; color: #1e293b; padding-left: 4px;")
         root_layout.addWidget(self.lbl_top_val)
 
-        # Labels de compatibilidad para tests existentes
+        # Label de compatibilidad para verificar el carácter ganador
         self.lbl_top_char = QLabel("—")
         self.lbl_top_char.setVisible(False)
         root_layout.addWidget(self.lbl_top_char)
-
-        self.lbl_top_hdr = QLabel("Letra más probable")
-        self.lbl_top_hdr.setVisible(False)
-        root_layout.addWidget(self.lbl_top_hdr)
-
-        self.lbl_sub = QLabel("P(c | O1:t)")
-        self.lbl_sub.setVisible(False)
-        root_layout.addWidget(self.lbl_sub)
 
         # Área de desplazamiento con las 27 filas
         scroll = QScrollArea()
@@ -229,19 +216,6 @@ class RankingPanel(QFrame):
             row.bar.setValue(0)
             row.lbl_pct.setText("0.0%")
             row.set_highlight(False)
-
-    def reset_ranking(self) -> None:
-        self.reset()
-
-    def update_ranking(
-        self,
-        ranking: Sequence[tuple[str, float]],
-        top_letter: str | None = None,
-        current_state: int | None = None,
-        n_states: int | None = None,
-        n_obs: int = 0,
-    ) -> None:
-        self.update_probabilities(ranking, current_state, n_obs)
 
     def update_probabilities(
         self,

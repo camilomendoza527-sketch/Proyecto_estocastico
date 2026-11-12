@@ -184,13 +184,6 @@ class SphereCanvas3D(gl.GLViewWidget):
         self._rebuild_projection_items()
         self.on_strokes_changed()
 
-    def undo_substroke(self) -> None:
-        if self.strokes:
-            self.strokes.pop()
-            self._current_stroke = None
-            self._rebuild_stroke_items()
-            self.on_strokes_changed()
-
     def reset_camera_view(self) -> None:
         """Reorienta la cámara a la vista estándar del balón."""
         self.opts["azimuth"] = 0.0
@@ -223,7 +216,7 @@ class SphereCanvas3D(gl.GLViewWidget):
                 self.addItem(dot)
                 self._stroke_items.append(dot)
             else:
-                # 1. Cinta 3D fina en relieve con sombreado de profundidad esférica (GLMeshItem con vertexColors)
+                # Cinta 3D fina en relieve + cresta central reutilizando los vértices densificados (verts[1::3])
                 ribbon = self.extractor.build_spherical_ribbon_mesh(
                     raw_pts, radius=r_lift, half_width_rad=0.0085, max_angle_step=0.009
                 )
@@ -235,18 +228,12 @@ class SphereCanvas3D(gl.GLViewWidget):
                         smooth=True,
                         glOptions="opaque",
                     )
+                    line = gl.GLLinePlotItem(
+                        pos=verts[1::3], color=(0.12, 0.36, 0.86, 0.95), width=2.0, antialias=True
+                    )
                     self.addItem(ribbon_item)
-                    self._stroke_items.append(ribbon_item)
-
-                # 2. Cresta central nítida antialias sobre el lomo del trazo
-                curved_pts = self.extractor.densify_spherical_polyline(
-                    raw_pts, radius=r_lift * 1.004, max_angle_step=0.009
-                )
-                line = gl.GLLinePlotItem(
-                    pos=curved_pts, color=(0.12, 0.36, 0.86, 0.95), width=2.0, antialias=True
-                )
-                self.addItem(line)
-                self._stroke_items.append(line)
+                    self.addItem(line)
+                    self._stroke_items.extend([ribbon_item, line])
 
             # Puntos naranjas sobre el arco geodésico si hubo salto de pluma levantada entre sub-trazos
             if idx > 0 and self.strokes[idx - 1]:
@@ -272,15 +259,13 @@ class SphereCanvas3D(gl.GLViewWidget):
             return
 
         r_lift = self.radius * 1.004
+        r_nodes = r_lift * 1.005
         for p_stroke in self.projected_strokes:
             if len(p_stroke) < 2:
                 continue
-            lifted_nodes = self.extractor.densify_spherical_polyline(
-                p_stroke, radius=r_lift * 1.005, max_angle_step=10.0  # conservar nodos originales a radio r_lift
-            )
-            curved_proj = self.extractor.densify_spherical_polyline(
-                p_stroke, radius=r_lift * 1.005, max_angle_step=0.015
-            )
+            norms = np.maximum(np.linalg.norm(p_stroke, axis=1, keepdims=True), 1e-12)
+            lifted_nodes = p_stroke * (r_nodes / norms)
+
             proj_ribbon = self.extractor.build_spherical_ribbon_mesh(
                 p_stroke, radius=r_lift, half_width_rad=0.0055, max_angle_step=0.015
             )
@@ -293,18 +278,18 @@ class SphereCanvas3D(gl.GLViewWidget):
                     color=(0.09, 0.64, 0.29, 0.42),
                     glOptions="translucent",
                 )
+                line = gl.GLLinePlotItem(
+                    pos=verts[1::3], color=(0.09, 0.64, 0.29, 0.75), width=1.6, antialias=True
+                )
                 self.addItem(mesh_item)
-                self._proj_items.append(mesh_item)
+                self.addItem(line)
+                self._proj_items.extend([mesh_item, line])
 
             dots = gl.GLScatterPlotItem(
                 pos=lifted_nodes, color=(0.09, 0.64, 0.29, 0.95), size=4.5, pxMode=True
             )
-            line = gl.GLLinePlotItem(
-                pos=curved_proj, color=(0.09, 0.64, 0.29, 0.75), width=1.6, antialias=True
-            )
-            self.addItem(line)
             self.addItem(dots)
-            self._proj_items.extend([line, dots])
+            self._proj_items.append(dots)
         self.update()
 
     # --- Eventos de ratón (trazado vs rotación de la esfera) ------------------
@@ -415,7 +400,7 @@ class View3D(QWidget):
         top_bar.addLayout(header_v, stretch=1)
 
         # Botones de acción en la esquina superior derecha
-        self.btn_rotate_mode = QPushButton("🔄 Girar esfera: OFF")
+        self.btn_rotate_mode = QPushButton(" Girar esfera: OFF")
         self.btn_rotate_mode.setCheckable(True)
         self.btn_rotate_mode.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_rotate_mode.setStyleSheet(self._toggle_button_style(False))
@@ -516,7 +501,7 @@ class View3D(QWidget):
 
     def _on_toggle_rotate_mode(self, checked: bool) -> None:
         self.canvas3d.rotate_mode = checked
-        self.btn_rotate_mode.setText("🔄 Girar esfera: ON" if checked else "🔄 Girar esfera: OFF")
+        self.btn_rotate_mode.setText(" Girar esfera: ON" if checked else "  Girar esfera: OFF")
         self.btn_rotate_mode.setStyleSheet(self._toggle_button_style(checked))
         self.canvas3d.setCursor(
             Qt.CursorShape.OpenHandCursor if checked else Qt.CursorShape.CrossCursor
@@ -526,7 +511,7 @@ class View3D(QWidget):
         strokes = self.canvas3d.get_numpy_strokes()
         if not strokes:
             self.canvas3d.set_projected_strokes([])
-            self.ranking_panel.reset_ranking()
+            self.ranking_panel.reset()
             az, el = self.canvas3d.current_camera_orientation()
             self.lbl_obs.setText(
                 f"Esfera lista (azimut={az:.0f}°, elevación={el:.0f}°). "
@@ -542,19 +527,16 @@ class View3D(QWidget):
         symbols = res.symbols.tolist()
         if not symbols:
             self.canvas3d.set_projected_strokes([])
-            self.ranking_panel.reset_ranking()
+            self.ranking_panel.reset()
             self.lbl_obs.setText(f"Sub-trazos 3D: {len(strokes)} | Continúa trazando sobre la esfera...")
             return
 
         ranking, top_letter, current_state, future_symbols = self.classifier.predict_and_project(
             symbols, max_symbols=45
         )
-        n_states = self.classifier.models[top_letter].n_states if top_letter else None
-        self.ranking_panel.update_ranking(
+        self.ranking_panel.update_probabilities(
             ranking=ranking,
-            top_letter=top_letter,
-            current_state=current_state,
-            n_states=n_states,
+            viterbi_state=current_state,
             n_obs=len(symbols),
         )
 

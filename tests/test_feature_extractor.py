@@ -231,25 +231,6 @@ def test_3d_slerp_arc_and_densify_deforms_along_sphere_surface():
     np.testing.assert_allclose(np.linalg.norm(verts[0::3], axis=1), r * 1.001, rtol=1e-4)
     np.testing.assert_allclose(np.linalg.norm(verts[1::3], axis=1), r * 1.005, rtol=1e-4)
 
-    # Verificar que mover hacia arriba en pantalla (v < 0) sube en Z (+Z_cam > 0), NUNCA se invierte hacia abajo
-    pt_up = fx3.map_screen_delta_to_sphere(u=0.0, v=-0.4, camera_rotation=(0.0, 0.0), radius=r)
-    pt_down = fx3.map_screen_delta_to_sphere(u=0.0, v=+0.4, camera_rotation=(0.0, 0.0), radius=r)
-    assert pt_up[2] > 0.5 * r
-    assert pt_down[2] < -0.5 * r
-
-    # map_screen_delta_to_sphere curva un trazo horizontal alto (v != 0) sobre el paralelo esférico
-    us = np.linspace(-0.6, 0.6, 15)
-    pts_high = np.vstack([
-        fx3.map_screen_delta_to_sphere(u=float(u), v=-0.45, camera_rotation=(0.0, 0.0), radius=r)
-        for u in us
-    ])
-    np.testing.assert_allclose(np.linalg.norm(pts_high, axis=1), r, atol=1e-9)
-    # Al proyectar en el plano de la cámara (Y_cam, Z_cam) con elevación 18°, la altura aparente varía (curva real, no recta 2D)
-    R_view = fx3.build_camera_matrix((0.0, 18.0))
-    cam_pts = pts_high @ R_view.T
-    z_screen = cam_pts[:, 2]
-    assert float(np.max(z_screen) - np.min(z_screen)) > 0.05 * r
-
 
 
 

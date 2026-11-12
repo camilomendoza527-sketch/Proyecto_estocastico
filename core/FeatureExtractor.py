@@ -129,6 +129,22 @@ class FeatureExtractor:
             phi = 2.0 * np.pi * symbol / self.K
         return np.array([np.cos(phi), np.sin(phi)])
 
+    def _moving_average(self, points: np.ndarray) -> np.ndarray:
+        """Promedio móvil centrado O(n) con ventana simétrica adaptativa en los bordes.
+
+        Ecuación:
+            p̄_i = 1/(2r_i+1) · Σ_{j=-r_i}^{r_i} p_{i+j},   r_i = min(r, i, n-1-i)
+        """
+        w = self.cfg.smoothing_window
+        n = len(points)
+        if w <= 1 or n < 3:
+            return points
+        idx = np.arange(n)
+        r_i = np.minimum(w // 2, np.minimum(idx, n - 1 - idx))
+        C = np.vstack([np.zeros((1, points.shape[1])), np.cumsum(points, axis=0)])
+        sums = C[idx + r_i + 1] - C[idx - r_i]
+        return sums / (2 * r_i + 1)[:, None]
+
 
 # -----------------------------------------------------------------------------
 # Extractor 2D
@@ -178,16 +194,7 @@ class FeatureExtractor2D(FeatureExtractor):
         Los extremos (r_0 = r_{n−1} = 0) quedan fijos y un tramo recto no se
         deforma. Así el resultado no depende de la densidad de puntos.
         """
-        w = self.cfg.smoothing_window
-        n = len(points)
-        if w <= 1 or n < 3:
-            return points
-        idx = np.arange(n)
-        r_i = np.minimum(w // 2, np.minimum(idx, n - 1 - idx))
-        # Sumas por ventana con sumas acumuladas: Σ_{a}^{b} p = C[b+1] − C[a].
-        C = np.vstack([np.zeros((1, 2)), np.cumsum(points, axis=0)])
-        sums = C[idx + r_i + 1] - C[idx - r_i]
-        return sums / (2 * r_i + 1)[:, None]
+        return self._moving_average(points)
 
     # --- Paso 3: remuestreo a distancia constante -----------------------------
     def resample(self, points: np.ndarray) -> np.ndarray:
@@ -550,15 +557,7 @@ class FeatureExtractor3D(FeatureExtractor):
             p̃_i = p̄_i / ‖p̄_i‖ ∈ S²
         Los extremos (r_0 = r_{n-1} = 0) permanecen exactos sobre S².
         """
-        w = self.cfg.smoothing_window
-        n = len(points_unit)
-        if w <= 1 or n < 3:
-            return points_unit
-        idx = np.arange(n)
-        r_i = np.minimum(w // 2, np.minimum(idx, n - 1 - idx))
-        C = np.vstack([np.zeros((1, 3)), np.cumsum(points_unit, axis=0)])
-        sums = C[idx + r_i + 1] - C[idx - r_i]
-        avg = sums / (2 * r_i + 1)[:, None]
+        avg = self._moving_average(points_unit)
         norms = np.linalg.norm(avg, axis=1, keepdims=True)
         return avg / np.maximum(norms, 1e-12)
 
@@ -950,46 +949,6 @@ class FeatureExtractor3D(FeatureExtractor):
             )
             segments.append(arc[1:])
         return np.vstack(segments)
-
-    def map_screen_delta_to_sphere(
-        self,
-        u: float,
-        v: float,
-        camera_rotation: CameraOrientation = None,
-        radius: float = 1.0,
-        angular_gain: float = 1.15,
-    ) -> np.ndarray | None:
-        """Mapea coordenadas normalizadas de pantalla (u, v) ∈ [-1, 1]² a la esfera S²
-        mediante parametrización esférica (longitud Δφ, latitud Δθ).
-
-        Convención de signos:
-            - u > 0: derecha en pantalla  → φ crece (+Y_cam)
-            - v > 0: abajo en pantalla    → θ crece desde π/2 hacia π (-Z_cam, sur)
-            - v < 0: arriba en pantalla   → θ decrece desde π/2 hacia 0 (+Z_cam, norte)
-
-        Ecuaciones:
-            Si u² + v² > 1.10: fuera del disco esférico visible (None).
-            Δφ = u · α_gain · (π / 2)
-            Δθ = +v · α_gain · (π / 2)
-            θ = clip(π/2 + Δθ, 0.08, π - 0.08)
-            φ = clip(Δφ, -0.48·π, 0.48·π)
-            p_cam = R · (sin θ cos φ, sin θ sin φ, cos θ)
-            p_world = p_cam · R_cam
-        """
-        if u * u + v * v > 1.10:
-            return None
-        half_pi = 0.5 * np.pi
-        dphi = float(np.clip(u * angular_gain * half_pi, -0.48 * np.pi, 0.48 * np.pi))
-        dtheta = float(v * angular_gain * half_pi)
-        theta = float(np.clip(half_pi + dtheta, 0.08, np.pi - 0.08))
-        phi = dphi
-
-        st = np.sin(theta)
-        p_cam = float(radius) * np.array(
-            [st * np.cos(phi), st * np.sin(phi), np.cos(theta)], dtype=float
-        )
-        R_cam = self.build_camera_matrix(camera_rotation)
-        return p_cam @ R_cam
 
     @staticmethod
     def build_spherical_ribbon_mesh(

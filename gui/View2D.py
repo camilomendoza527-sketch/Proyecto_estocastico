@@ -79,13 +79,6 @@ class RecognizerCanvas2D(QFrame):
         self.update()
         self.on_strokes_changed()
 
-    def undo_substroke(self) -> None:
-        if self.strokes:
-            self.strokes.pop()
-            self._current_stroke = None
-            self.update()
-            self.on_strokes_changed()
-
     def get_numpy_strokes(self) -> list[np.ndarray]:
         return [np.asarray(s, dtype=float) for s in self.strokes if len(s) > 0]
 

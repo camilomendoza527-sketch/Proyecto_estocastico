@@ -39,36 +39,46 @@ class EvaluationReport:
     confusion_full: np.ndarray
 
 
-def evaluate_k_2d(
+def _evaluate_k_mode(
+    mode: str,
     K: int,
     raw_dir: Path | None = None,
     train_ratio: float = 0.75,
     augment_factor: int = 1,
     max_iter: int = 25,
 ) -> EvaluationReport:
-    """Divide las muestras por letra en train/test, entrena con K y evalúa prefijos."""
+    """Núcleo compartido para dividir muestras en train/test, entrenar con K y evaluar prefijos (2D o 3D)."""
     cfg = get_config()
-    generate_seed_dataset_2d(samples_per_letter=20, base_dir=raw_dir, only_if_empty=True)
+    is_3d = mode == "3d"
+    if is_3d:
+        generate_seed_dataset_3d(samples_per_letter=20, base_dir=raw_dir, only_if_empty=True)
+        extractor: FeatureExtractor2D | FeatureExtractor3D = FeatureExtractor3D(K=K)
+        train_fn = train_letter_3d
+        seed_base = 700
+    else:
+        generate_seed_dataset_2d(samples_per_letter=20, base_dir=raw_dir, only_if_empty=True)
+        extractor = FeatureExtractor2D(K=K)
+        train_fn = train_letter_2d
+        seed_base = 500
 
-    extractor = FeatureExtractor2D(K=K)
     classifier = HMMClassifier()
-
     test_set: dict[str, list[list[np.ndarray]]] = {}
+
     for idx, letter in enumerate(cfg.letters):
-        samples = load_raw_samples(letter, mode="2d", base_dir=raw_dir)
+        samples = load_raw_samples(letter, mode=mode, base_dir=raw_dir)
         n_train = max(1, int(round(len(samples) * train_ratio)))
         train_samples = samples[:n_train]
         test_samples = samples[n_train:] if n_train < len(samples) else samples[-2:]
         test_set[letter] = test_samples
 
-        hmm, _ = train_letter_2d(
+        hmm, _ = train_fn(
             letter=letter,
             samples=train_samples,
-            extractor=extractor,
+            extractor=extractor,  # type: ignore[arg-type]
             n_states=cfg.states[letter],
             augment_factor=augment_factor,
             max_iter=max_iter,
-            seed=500 + idx,
+            seed=seed_base + idx,
         )
         classifier.add_model(hmm)
 
@@ -117,6 +127,17 @@ def evaluate_k_2d(
         per_letter_acc_full=per_letter_acc,
         confusion_full=confusion,
     )
+
+
+def evaluate_k_2d(
+    K: int,
+    raw_dir: Path | None = None,
+    train_ratio: float = 0.75,
+    augment_factor: int = 1,
+    max_iter: int = 25,
+) -> EvaluationReport:
+    """Divide las muestras por letra en train/test, entrena con K y evalúa prefijos en 2D."""
+    return _evaluate_k_mode("2d", K, raw_dir, train_ratio, augment_factor, max_iter)
 
 
 def evaluate_k_3d(
@@ -127,76 +148,7 @@ def evaluate_k_3d(
     max_iter: int = 25,
 ) -> EvaluationReport:
     """Divide las muestras 3D por letra en train/test, entrena con K y evalúa prefijos geodésicos."""
-    cfg = get_config()
-    generate_seed_dataset_3d(samples_per_letter=20, base_dir=raw_dir, only_if_empty=True)
-
-    extractor = FeatureExtractor3D(K=K)
-    classifier = HMMClassifier()
-
-    test_set: dict[str, list[list[np.ndarray]]] = {}
-    for idx, letter in enumerate(cfg.letters):
-        samples = load_raw_samples(letter, mode="3d", base_dir=raw_dir)
-        n_train = max(1, int(round(len(samples) * train_ratio)))
-        train_samples = samples[:n_train]
-        test_samples = samples[n_train:] if n_train < len(samples) else samples[-2:]
-        test_set[letter] = test_samples
-
-        hmm, _ = train_letter_3d(
-            letter=letter,
-            samples=train_samples,
-            extractor=extractor,
-            n_states=cfg.states[letter],
-            augment_factor=augment_factor,
-            max_iter=max_iter,
-            seed=700 + idx,
-        )
-        classifier.add_model(hmm)
-
-    fractions = cfg.prefix_fractions
-    top1_hits = {f: 0 for f in fractions}
-    top3_hits = {f: 0 for f in fractions}
-    totals = {f: 0 for f in fractions}
-
-    n_classes = len(cfg.letters)
-    letter_to_idx = {ch: i for i, ch in enumerate(cfg.letters)}
-    confusion = np.zeros((n_classes, n_classes), dtype=int)
-    per_letter_hits = {ch: 0 for ch in cfg.letters}
-    per_letter_tot = {ch: 0 for ch in cfg.letters}
-
-    for letter, samples in test_set.items():
-        for strokes in samples:
-            for frac in fractions:
-                res = extractor.extract_prefix(strokes, frac)
-                if len(res.symbols) == 0:
-                    continue
-                ranking = classifier.classify(res.symbols)
-                pred_top1 = ranking[0][0]
-                pred_top3 = [r[0] for r in ranking[:3]]
-
-                totals[frac] += 1
-                if pred_top1 == letter:
-                    top1_hits[frac] += 1
-                if letter in pred_top3:
-                    top3_hits[frac] += 1
-
-                if np.isclose(frac, 1.0):
-                    confusion[letter_to_idx[letter], letter_to_idx[pred_top1]] += 1
-                    per_letter_tot[letter] += 1
-                    if pred_top1 == letter:
-                        per_letter_hits[letter] += 1
-
-    top1_by_prefix = {f: top1_hits[f] / max(1, totals[f]) for f in fractions}
-    top3_by_prefix = {f: top3_hits[f] / max(1, totals[f]) for f in fractions}
-    per_letter_acc = {
-        ch: per_letter_hits[ch] / max(1, per_letter_tot[ch]) for ch in cfg.letters
-    }
-    return EvaluationReport(
-        K=K,
-        top1_by_prefix=top1_by_prefix,
-        top3_by_prefix=top3_by_prefix,
-        per_letter_acc_full=per_letter_acc,
-        confusion_full=confusion,
-    )
+    return _evaluate_k_mode("3d", K, raw_dir, train_ratio, augment_factor, max_iter)
 
 
 def compare_k_configs(

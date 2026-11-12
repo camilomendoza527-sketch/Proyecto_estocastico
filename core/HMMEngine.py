@@ -51,6 +51,13 @@ class HMM:
         self.expected_length = float(self.expected_length)
         self.length_std = float(self.length_std)
         self._validate_shapes_and_stochastic()
+        self._refresh_log_matrices()
+
+    def _refresh_log_matrices(self) -> None:
+        """Precalcula log(A), log(B) y log(π) para acelerar Viterbi en tiempo real."""
+        self._log_A = np.log(self.A + 1e-300)
+        self._log_B = np.log(self.B + 1e-300)
+        self._log_pi = np.log(self.pi + 1e-300)
 
     def length_deviation_penalty(self, n_obs: int) -> float:
         """Penalización estocástica de duración cuando la longitud T excede el límite de la letra.
@@ -251,9 +258,9 @@ class HMM:
         if T == 0:
             return [], float("-inf")
 
-        log_A = np.log(self.A + 1e-300)
-        log_B = np.log(self.B + 1e-300)
-        log_pi = np.log(self.pi + 1e-300)
+        log_A = self._log_A
+        log_B = self._log_B
+        log_pi = self._log_pi
 
         delta = np.zeros((T, N), dtype=np.float64)
         psi = np.zeros((T, N), dtype=int)
@@ -263,12 +270,9 @@ class HMM:
 
         # 2. Inducción
         for t in range(1, T):
-            o_t = observations[t]
-            # matriz (N, N) con fila i = delta[t-1, i] + log_A[i, j]
-            # delta[:, None] transmite a columnas
             transitions = delta[t - 1, :, None] + log_A
             psi[t] = np.argmax(transitions, axis=0)
-            delta[t] = np.max(transitions, axis=0) + log_B[:, o_t]
+            delta[t] = np.max(transitions, axis=0) + log_B[:, observations[t]]
 
         # 3. Terminación
         best_last_state = int(np.argmax(delta[T - 1]))
@@ -364,45 +368,37 @@ class HMM:
                     if xi_sum > 0:
                         xi_t /= xi_sum
                     A_num += xi_t
-                    A_den += gamma[t]
 
-                # Acumuladores de B
-                for t in range(T):
-                    o_t = seq[t]
-                    B_num[:, o_t] += gamma[t]
-                    B_den += gamma[t]
+                if T > 1:
+                    A_den += np.sum(gamma[:-1], axis=0)
+
+                # Acumuladores vectorizados de B
+                np.add.at(B_num.T, np.asarray(seq, dtype=np.intp), gamma)
+                B_den += np.sum(gamma, axis=0)
 
             history.append(total_log_prob)
 
             # Paso M: Reestimación
             # Reestimar pi (en topología izquierda-derecha fija: π = [1, 0, ...])
-            new_pi = pi_num / K_seqs
-            new_pi = np.maximum(new_pi, 1e-6)
+            new_pi = np.maximum(pi_num / K_seqs, 1e-6)
             self.pi = new_pi / np.sum(new_pi)
 
-            # Reestimar A
-            new_A = np.zeros((N, N), dtype=np.float64)
-            for i in range(N):
-                if A_den[i] > 0:
-                    new_A[i] = A_num[i] / A_den[i]
-                else:
-                    new_A[i] = self.A[i]
-
-            # Preservar estructura de soporte (máscara de ceros estructurales de Bakis)
+            # Reestimar A preservando la máscara estructural Bakis
             mask_A = self.A > 0
-            new_A = new_A * mask_A + pseudo_count * mask_A
-            row_sums_A = np.sum(new_A, axis=1, keepdims=True)
-            self.A = new_A / (row_sums_A + 1e-300)
+            valid_A = A_den[:, None] > 0
+            new_A = np.where(valid_A, A_num / np.maximum(A_den[:, None], 1e-300), self.A)
+            new_A = (new_A + pseudo_count) * mask_A
+            self.A = new_A / (np.sum(new_A, axis=1, keepdims=True) + 1e-300)
 
-            # Reestimar B
-            new_B = np.zeros((N, M), dtype=np.float64)
-            for j in range(N):
-                if B_den[j] > 0:
-                    new_B[j] = (B_num[j] + pseudo_count) / (B_den[j] + M * pseudo_count)
-                else:
-                    new_B[j] = (1.0 / M)
-            row_sums_B = np.sum(new_B, axis=1, keepdims=True)
-            self.B = new_B / (row_sums_B + 1e-300)
+            # Reestimar B con suavizado de Laplace
+            valid_B = B_den[:, None] > 0
+            new_B = np.where(
+                valid_B,
+                (B_num + pseudo_count) / (B_den[:, None] + M * pseudo_count),
+                1.0 / M,
+            )
+            self.B = new_B / (np.sum(new_B, axis=1, keepdims=True) + 1e-300)
+            self._refresh_log_matrices()
 
             # Criterio de parada
             if iteration > 0 and abs(history[-1] - history[-2]) < tol:
@@ -414,6 +410,7 @@ class HMM:
             self.expected_length = float(np.mean(valid_lengths))
             self.length_std = float(max(np.std(valid_lengths), 4.0))
 
+        self._refresh_log_matrices()
         return history
 
     # =========================================================================

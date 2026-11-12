@@ -35,25 +35,30 @@ from training.augment import (
 )
 
 
+def _parse_glifo_strokes(raw_list: list) -> list[list[np.ndarray]]:
+    """Convierte una lista cruda de muestras (con puntos [x, y, t?]) en arrays 2D (x, y)."""
+    samples: list[list[np.ndarray]] = []
+    for s in raw_list:
+        strokes = [np.array(st, dtype=float)[:, :2] for st in s if len(st) > 0]
+        if strokes:
+            samples.append(strokes)
+    return samples
+
+
 def load_glifo_samples(
     letter: str, glifo_path: Path | None = None, max_samples: int = 80
 ) -> list[list[np.ndarray]]:
     """Carga muestras reales de data/letras/<alias>.json o data/glifo-dataset-2026-11-06.json."""
     cfg = get_config()
     alias = cfg.file_name(letter)
-    
+
     # 1. Intentar cargar desde el archivo específico de la letra en data/letras/
     letra_file = PROJECT_ROOT / "data" / "letras" / f"{alias}.json"
     if letra_file.exists():
         try:
             with open(letra_file, "r", encoding="utf-8") as f:
                 d = json.load(f)
-            raw_list = d.get(letter, d.get(alias, []))[:max_samples]
-            samples = []
-            for s in raw_list:
-                strokes = [np.array(st, dtype=float)[:, :2] for st in s if len(st) > 0]
-                if strokes:
-                    samples.append(strokes)
+            samples = _parse_glifo_strokes(d.get(letter, d.get(alias, []))[:max_samples])
             if samples:
                 return samples
         except Exception:
@@ -71,21 +76,17 @@ def load_glifo_samples(
 
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    target_key = None
-    for k in data.keys():
-        cand = "ñ" if (k == "ñ" or (len(k) == 1 and ord(k) == 241)) else k
-        if cand == letter:
-            target_key = k
-            break
-    if target_key is None or target_key not in data:
+    target_key = next(
+        (
+            k
+            for k in data
+            if ("ñ" if (k == "ñ" or (len(k) == 1 and ord(k) == 241)) else k) == letter
+        ),
+        None,
+    )
+    if target_key is None:
         return []
-    raw_list = data[target_key][:max_samples]
-    samples = []
-    for s in raw_list:
-        strokes = [np.array(st, dtype=float)[:, :2] for st in s if len(st) > 0]
-        if strokes:
-            samples.append(strokes)
-    return samples
+    return _parse_glifo_strokes(data[target_key][:max_samples])
 
 
 def train_letter_2d(
