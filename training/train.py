@@ -46,9 +46,9 @@ def _parse_glifo_strokes(raw_list: list) -> list[list[np.ndarray]]:
 
 
 def load_glifo_samples(
-    letter: str, glifo_path: Path | None = None, max_samples: int = 80
+    letter: str, glifo_path: Path | None = None, max_samples: int | None = None
 ) -> list[list[np.ndarray]]:
-    """Carga muestras reales de data/letras/<alias>.json o data/glifo-dataset-2026-11-06.json."""
+    """Carga todas las muestras reales disponibles de data/letras/<alias>.json o glifo-dataset."""
     cfg = get_config()
     alias = cfg.file_name(letter)
 
@@ -58,7 +58,8 @@ def load_glifo_samples(
         try:
             with open(letra_file, "r", encoding="utf-8") as f:
                 d = json.load(f)
-            samples = _parse_glifo_strokes(d.get(letter, d.get(alias, []))[:max_samples])
+            raw_list = d.get(letter, d.get(alias, []))
+            samples = _parse_glifo_strokes(raw_list[:max_samples])
             if samples:
                 return samples
         except Exception:
@@ -187,7 +188,7 @@ def train_all_2d(
         glifo_samples = load_glifo_samples(letter)
         samples = glifo_samples if glifo_samples else load_raw_samples(letter, mode="2d", base_dir=raw_dir)
         n_states = cfg.states[letter]
-        aug = 1 if glifo_samples else augment_factor
+        aug = 0 if len(glifo_samples) >= 100 else (1 if glifo_samples else augment_factor)
         hmm, history = train_letter_2d(
             letter=letter,
             samples=samples,
@@ -206,8 +207,8 @@ def train_all_2d(
             ll_end = history[-1] if history else float("nan")
             print(
                 f"[2D K={extractor.K}] '{letter}' (N={n_states:2d}) | "
-                f"muestras={len(samples):2d} {'(glifo)' if glifo_samples else ''} | iter={len(history):2d} | "
-                f"logL: {ll_start:8.1f} -> {ll_end:8.1f} | {model_path.name}"
+                f"muestras={len(samples):3d} {'(glifo)' if glifo_samples else ''} | iter={len(history):2d} | "
+                f"logL: {ll_start:9.1f} -> {ll_end:9.1f} | {model_path.name}"
             )
     return trained
 
@@ -243,7 +244,7 @@ def train_all_3d(
                 )
                 for s in glifo_samples
             ]
-            aug = 1
+            aug = 0 if len(glifo_samples) >= 100 else 1
         else:
             samples = load_raw_samples(letter, mode="3d", base_dir=raw_dir)
             aug = augment_factor
@@ -266,8 +267,8 @@ def train_all_3d(
             ll_end = history[-1] if history else float("nan")
             print(
                 f"[3D K={extractor.K}] '{letter}' (N={n_states:2d}) | "
-                f"muestras={len(samples):2d} | iter={len(history):2d} | "
-                f"logL: {ll_start:8.1f} -> {ll_end:8.1f} | {model_path.name}"
+                f"muestras={len(samples):3d} | iter={len(history):2d} | "
+                f"logL: {ll_start:9.1f} -> {ll_end:9.1f} | {model_path.name}"
             )
     return trained
 
