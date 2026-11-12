@@ -995,18 +995,18 @@ class FeatureExtractor3D(FeatureExtractor):
     def build_spherical_ribbon_mesh(
         points: np.ndarray,
         radius: float = 1.0,
-        half_width_rad: float = 0.022,
-        max_angle_step: float = 0.014,
+        half_width_rad: float = 0.0085,
+        max_angle_step: float = 0.009,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-        """Construye una malla 3D de cinta en relieve sobre S² con sombreado de profundidad.
+        """Construye una malla 3D fina de cinta en relieve sobre S² con sombreado de profundidad.
 
         Devuelve (verts, faces, vertex_colors) donde:
-        - El centro de la cinta (cresta) se eleva a r_crest = 1.016·R con azul brillante,
-          mientras los bordes laterales apoyan exactamente sobre la esfera (1.003·R) en azul
-          profundo. Esta sección transversal convexa 3D genera volumen real sobre el balón.
-        - Además, aplica sombreado de profundidad esférica (Lambertiano radial + caída hacia
-          el limbo) para que las zonas cercanas al centro del balón brillen con relieve y las
-          zonas que se curvan hacia el borde se atenúen tridimensionalmente.
+        - El centro de la cinta (cresta) se eleva sutilmente a r_crest = 1.005·R con azul brillante,
+          mientras los bordes laterales apoyan al ras sobre la esfera (1.001·R) en azul
+          profundo. Esto da volumen 3D y escorzo perspectivo real hacia el limbo del balón
+          sin separar el trazo del cursor del ratón (sin error de paralaje).
+        - Las tangentes se calculan por diferencias centrales suavizadas para evitar quiebres
+          en curvas cerradas.
         """
         pts = FeatureExtractor3D.densify_spherical_polyline(
             points, radius=radius, max_angle_step=max_angle_step
@@ -1018,10 +1018,15 @@ class FeatureExtractor3D(FeatureExtractor):
         norms = np.linalg.norm(pts, axis=1, keepdims=True)
         normals = pts / np.maximum(norms, 1e-12)
 
-        # Vector tangente unitario a lo largo de la curva
+        # Vector tangente unitario suavizado a lo largo de la curva (diferencias centrales)
         tangents = np.zeros_like(pts)
-        tangents[:-1] = pts[1:] - pts[:-1]
-        tangents[-1] = tangents[-2]
+        if m == 2:
+            tangents[0] = pts[1] - pts[0]
+            tangents[1] = tangents[0]
+        else:
+            tangents[0] = pts[1] - pts[0]
+            tangents[1:-1] = pts[2:] - pts[:-2]
+            tangents[-1] = pts[-1] - pts[-2]
         t_norms = np.linalg.norm(tangents, axis=1, keepdims=True)
         if not np.any(t_norms[:, 0] > 1e-10):
             return None
@@ -1033,8 +1038,8 @@ class FeatureExtractor3D(FeatureExtractor):
         binormals = binormals / np.maximum(b_norms, 1e-12)
 
         w = float(radius) * float(half_width_rad)
-        r_edge = float(radius) * 1.002
-        r_crest = float(radius) * 1.016
+        r_edge = float(radius) * 1.001
+        r_crest = float(radius) * 1.005
 
         left_v = pts + w * binormals
         right_v = pts - w * binormals

@@ -227,9 +227,9 @@ def test_3d_slerp_arc_and_densify_deforms_along_sphere_surface():
     assert verts.shape[1] == 3
     assert faces.shape[1] == 3
     assert colors.shape == (len(verts), 4)
-    # Bordes a r * 1.002 y cresta central a r * 1.016
-    np.testing.assert_allclose(np.linalg.norm(verts[0::3], axis=1), r * 1.002, rtol=1e-4)
-    np.testing.assert_allclose(np.linalg.norm(verts[1::3], axis=1), r * 1.016, rtol=1e-4)
+    # Bordes a r * 1.001 y cresta central a r * 1.005
+    np.testing.assert_allclose(np.linalg.norm(verts[0::3], axis=1), r * 1.001, rtol=1e-4)
+    np.testing.assert_allclose(np.linalg.norm(verts[1::3], axis=1), r * 1.005, rtol=1e-4)
 
     # Verificar que mover hacia arriba en pantalla (v < 0) sube en Z (+Z_cam > 0), NUNCA se invierte hacia abajo
     pt_up = fx3.map_screen_delta_to_sphere(u=0.0, v=-0.4, camera_rotation=(0.0, 0.0), radius=r)
