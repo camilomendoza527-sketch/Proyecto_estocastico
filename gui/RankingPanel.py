@@ -187,12 +187,39 @@ class RankingPanel(QFrame):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet("background: transparent; border: none;")
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollBar:vertical {"
+            "  background: transparent;"
+            "  width: 6px;"
+            "  margin: 4px 0 4px 0;"
+            "}"
+            "QScrollBar::handle:vertical {"
+            "  background: #cbd5e1;"
+            "  border-radius: 3px;"
+            "  min-height: 32px;"
+            "}"
+            "QScrollBar::handle:vertical:hover {"
+            "  background: #94a3b8;"
+            "}"
+            "QScrollBar::handle:vertical:pressed {"
+            "  background: #0f766e;"
+            "}"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {"
+            "  height: 0px;"
+            "  border: none;"
+            "  background: none;"
+            "}"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {"
+            "  background: transparent;"
+            "}"
+        )
 
         container = QWidget()
         container.setStyleSheet("background: transparent;")
         self.rows_layout = QVBoxLayout(container)
-        self.rows_layout.setContentsMargins(0, 0, 2, 0)
+        self.rows_layout.setContentsMargins(0, 0, 6, 0)
         self.rows_layout.setSpacing(2)
 
         self.rows: list[_LetterRankRow] = []
