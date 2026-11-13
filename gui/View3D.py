@@ -1,19 +1,4 @@
-"""Ventana C: Reconocedor y Visualizador 3D — Lienzo Esférico (SPEC §2.3).
-
-Sección Izquierda:
-- Lienzo 3D Esférico con pyqtgraph.opengl (GLViewWidget).
-- Renderizado de la esfera de soporte + grilla de meridianos/paralelos +
-  parche guía ecuatorial centrado en la vista de la cámara.
-- Conversión angular a (θ, φ) y proyección geodésica punteada en tiempo real
-  delegadas íntegramente a FeatureExtractor3D y HMMClassifier.
-- Soporte para trazado sobre la esfera (clic izquierdo + arrastrar),
-  rotación (clic derecho + arrastrar o casilla Rotar), zoom (rueda) y reorientación.
-- Levantar el ratón solo separa sub-trazos; únicamente "Limpiar Lienzo"
-  y "Reiniciar Captura" cierran la captura.
-
-Sección Derecha:
-- RankingPanel ordenado descendentemente según P(Carácter | O_{1:t}) con iconos.
-"""
+"""Ventana C — Modo 3D: Reconocedor y Visualizador Esférico (SPEC §2.3)."""
 
 from __future__ import annotations
 
@@ -38,6 +23,84 @@ from core.HMMEngine import HMMClassifier
 from gui.RankingPanel import RankingPanel
 
 
+def _slerp_arc(
+    p0: np.ndarray, p1: np.ndarray, radius: float, max_angle_step: float = 0.02
+) -> np.ndarray:
+    """Interpolación geodésica esférica (SLERP) entre dos puntos p0 y p1 sobre S²."""
+    u0 = np.asarray(p0, dtype=float)
+    u1 = np.asarray(p1, dtype=float)
+    n0 = np.linalg.norm(u0)
+    n1 = np.linalg.norm(u1)
+    if n0 < 1e-12 or n1 < 1e-12:
+        return np.vstack([u0, u1])
+    u0 = u0 / n0
+    u1 = u1 / n1
+
+    dot = float(np.clip(np.dot(u0, u1), -1.0, 1.0))
+    omega = float(np.arccos(dot))
+    if omega < 1e-5:
+        return np.vstack([radius * u0, radius * u1])
+
+    n_steps = max(2, int(np.ceil(omega / max_angle_step)) + 1)
+    t = np.linspace(0.0, 1.0, n_steps)[:, None]
+    sin_omega = np.sin(omega)
+    if sin_omega < 1e-6:
+        pts = (1.0 - t) * u0 + t * u1
+        pts /= np.maximum(np.linalg.norm(pts, axis=1, keepdims=True), 1e-12)
+        return radius * pts
+
+    w0 = np.sin((1.0 - t) * omega) / sin_omega
+    w1 = np.sin(t * omega) / sin_omega
+    return radius * (w0 * u0 + w1 * u1)
+
+
+def _densify_spherical(
+    pts_3d: np.ndarray, radius: float, max_angle_step: float = 0.015
+) -> np.ndarray:
+    """Densifica una polilínea sobre S² siguiendo arcos geodésicos SLERP."""
+    arr = np.asarray(pts_3d, dtype=float)
+    if len(arr) == 0:
+        return np.empty((0, 3))
+    if len(arr) == 1:
+        n = max(float(np.linalg.norm(arr[0])), 1e-12)
+        return (radius / n) * arr
+    segments: list[np.ndarray] = []
+    for i in range(len(arr) - 1):
+        arc = _slerp_arc(arr[i], arr[i + 1], radius=radius, max_angle_step=max_angle_step)
+        segments.append(arc if i == 0 else arc[1:])
+    return np.vstack(segments)
+
+
+def _build_guide_frame_curves(
+    extractor: FeatureExtractor3D,
+    camera_rotation: tuple[float, float],
+    radius: float,
+    half_span_deg: float = 48.0,
+) -> list[np.ndarray]:
+    """Construye las curvas 3D del recuadro guía ecuatorial centrado en la vista de cámara."""
+    R_inv = extractor.build_camera_matrix(camera_rotation).T
+    r_lift = radius * 1.003
+    hs = np.deg2rad(half_span_deg)
+    t = np.linspace(-hs, hs, 48)
+    z = np.zeros_like(t)
+    f = np.full_like(t, hs)
+
+    local_specs = [
+        (np.pi / 2.0 - f, t),
+        (np.pi / 2.0 + f, t),
+        (np.pi / 2.0 + t, -f),
+        (np.pi / 2.0 + t, f),
+        (np.pi / 2.0 + z, t),
+        (np.pi / 2.0 + t, z),
+    ]
+    curves: list[np.ndarray] = []
+    for th, ph in local_specs:
+        sph = np.column_stack([th, ph])
+        pts_std = r_lift * extractor.spherical_to_cartesian(sph)
+        curves.append(pts_std @ R_inv.T)
+    return curves
+
+
 class SphereCanvas3D(gl.GLViewWidget):
     """Lienzo interactivo 3D sobre una esfera con trazado por ray-casting y proyección geodésica."""
 
@@ -58,10 +121,6 @@ class SphereCanvas3D(gl.GLViewWidget):
         self.show_projection: bool = True
         self.rotate_mode: bool = False
         self._last_mouse_pos: QPointF | None = None
-
-        # Orientación de cámara (azimut, elevación) fijada al iniciar el primer trazo.
-        # La vista inicial tiene una inclinación sutil (18° de elevación) para que los paralelos y
-        # meridianos muestren de inmediato el volumen 3D y la curvatura real del balón.
         self.active_camera_orientation: tuple[float, float] = (0.0, 18.0)
 
         self.setMinimumSize(420, 420)
@@ -72,19 +131,17 @@ class SphereCanvas3D(gl.GLViewWidget):
         self.opts["elevation"] = 18.0
         self.setCursor(Qt.CursorShape.CrossCursor)
 
-        self._stroke_items: list[gl.GLLinePlotItem | gl.GLScatterPlotItem | gl.GLMeshItem] = []
+        self._stroke_items: list[gl.GLLinePlotItem | gl.GLScatterPlotItem] = []
         self._proj_items: list[gl.GLLinePlotItem | gl.GLScatterPlotItem] = []
         self._guide_items: list[gl.GLLinePlotItem] = []
 
         self._init_sphere_scene()
 
     def current_camera_orientation(self) -> tuple[float, float]:
-        """Devuelve (azimuth_deg, elevation_deg) actuales de la cámara."""
         return float(self.opts["azimuth"]), float(self.opts["elevation"])
 
     def _init_sphere_scene(self) -> None:
-        """Crea la malla de la esfera, meridianos/paralelos y el recuadro guía ecuatorial."""
-        md = gl.MeshData.sphere(rows=56, cols=56, radius=self.radius * 0.994)
+        md = gl.MeshData.sphere(rows=48, cols=48, radius=self.radius * 0.994)
         self.sphere_mesh = gl.GLMeshItem(
             meshdata=md,
             smooth=True,
@@ -94,7 +151,6 @@ class SphereCanvas3D(gl.GLViewWidget):
         )
         self.addItem(self.sphere_mesh)
 
-        # Grilla esférica de paralelos y meridianos (da percepción real de volumen y curvatura 3D)
         r_grid = self.radius * 1.001
         phis = np.linspace(0.0, 2.0 * np.pi, 96)
         for theta_deg in (20, 40, 60, 80, 90, 100, 120, 140, 160):
@@ -104,9 +160,7 @@ class SphereCanvas3D(gl.GLViewWidget):
             )
             is_eq = theta_deg == 90
             color = (0.42, 0.52, 0.66, 0.65) if is_eq else (0.58, 0.65, 0.75, 0.42)
-            width = 1.5 if is_eq else 1.0
-            item = gl.GLLinePlotItem(pos=pts, color=color, width=width, antialias=True)
-            self.addItem(item)
+            self.addItem(gl.GLLinePlotItem(pos=pts, color=color, width=1.5 if is_eq else 1.0, antialias=True))
 
         thetas = np.linspace(0.0, np.pi, 96)
         for phi_deg in range(0, 180, 20):
@@ -116,44 +170,31 @@ class SphereCanvas3D(gl.GLViewWidget):
             )
             is_prime = phi_deg in (0, 90)
             color = (0.42, 0.52, 0.66, 0.60) if is_prime else (0.58, 0.65, 0.75, 0.42)
-            width = 1.4 if is_prime else 1.0
-            item = gl.GLLinePlotItem(pos=pts, color=color, width=width, antialias=True)
-            self.addItem(item)
+            self.addItem(gl.GLLinePlotItem(pos=pts, color=color, width=1.4 if is_prime else 1.0, antialias=True))
 
         self._update_guide_frame(self.current_camera_orientation())
 
     def _update_guide_frame(self, cam_orient: tuple[float, float]) -> None:
-        """Actualiza el parche guía ecuatorial centrado en la orientación indicada."""
         for item in self._guide_items:
             self.removeItem(item)
         self._guide_items.clear()
 
-        curves = self.extractor.build_guide_frame_curves(
-            camera_rotation=cam_orient, radius=self.radius
-        )
+        curves = _build_guide_frame_curves(self.extractor, cam_orient, self.radius)
         for idx, curve in enumerate(curves):
             is_border = idx < 4
             color = (0.25, 0.42, 0.68, 0.85) if is_border else (0.45, 0.55, 0.68, 0.45)
-            width = 2.0 if is_border else 1.0
-            line = gl.GLLinePlotItem(pos=curve, color=color, width=width, antialias=True)
+            line = gl.GLLinePlotItem(
+                pos=curve, color=color, width=2.0 if is_border else 1.0, antialias=True
+            )
             self.addItem(line)
             self._guide_items.append(line)
 
-    # --- Intersección exacta rayo-esfera desde coordenadas del cursor ---------
     def _screen_to_sphere_point(self, x_px: float, y_px: float) -> np.ndarray | None:
-        """Desproyecta el píxel lógico (x_px, y_px) del ratón a un rayo 3D y halla su intersección
-        exacta con la superficie de la esfera S².
-
-        Garantiza precisión 1:1 bajo la punta del cursor del ratón: el trazo nace y avanza
-        exactamente en el punto físico del balón que está debajo del puntero, mientras su
-        geometría tridimensional (cinta tangente en relieve + SLERP) se curva sobre S².
-        """
         w = max(1, int(self.width()))
         h = max(1, int(self.height()))
         ndc_x = 2.0 * (float(x_px) / w) - 1.0
         ndc_y = 1.0 - 2.0 * (float(y_px) / h)
 
-        # GLViewWidget.projectionMatrix requiere (region, viewport) en coordenadas lógicas (w, h)
         logical_vp = (0, 0, w, h)
         mvp = self.projectionMatrix(logical_vp, logical_vp) * self.viewMatrix()
         inv_mvp, invertible = mvp.inverted()
@@ -167,10 +208,8 @@ class SphereCanvas3D(gl.GLViewWidget):
 
         p_near = np.array([near_4.x(), near_4.y(), near_4.z()], dtype=float) / near_4.w()
         p_far = np.array([far_4.x(), far_4.y(), far_4.z()], dtype=float) / far_4.w()
-        ray_dir = p_far - p_near
-        return self.extractor.intersect_ray_sphere(p_near, ray_dir, radius=self.radius)
+        return self.extractor.intersect_ray_sphere(p_near, p_far - p_near, radius=self.radius)
 
-    # --- Gestión de trazos y renderizado 3D -----------------------------------
     def get_numpy_strokes(self) -> list[np.ndarray]:
         return [np.vstack(s) for s in self.strokes if len(s) > 0]
 
@@ -185,7 +224,6 @@ class SphereCanvas3D(gl.GLViewWidget):
         self.on_strokes_changed()
 
     def reset_camera_view(self) -> None:
-        """Reorienta la cámara a la vista estándar del balón."""
         self.opts["azimuth"] = 0.0
         self.opts["elevation"] = 18.0
         self.opts["distance"] = 2.05 * self.radius
@@ -203,44 +241,31 @@ class SphereCanvas3D(gl.GLViewWidget):
             self.removeItem(item)
         self._stroke_items.clear()
 
-        r_lift = self.radius * 1.002
+        r_lift = self.radius * 1.004
         for idx, stroke_pts in enumerate(self.strokes):
             if not stroke_pts:
                 continue
             raw_pts = np.vstack(stroke_pts)
-            if len(raw_pts) == 1:
-                p_single = self.extractor.densify_spherical_polyline(raw_pts, radius=r_lift * 1.004)
+            dense = _densify_spherical(raw_pts, radius=r_lift)
+            if len(dense) == 1:
                 dot = gl.GLScatterPlotItem(
-                    pos=p_single, color=(0.09, 0.27, 0.78, 1.0), size=5.0, pxMode=True
+                    pos=dense, color=(0.09, 0.27, 0.78, 1.0), size=5.5, pxMode=True
                 )
                 self.addItem(dot)
                 self._stroke_items.append(dot)
             else:
-                # Cinta 3D fina en relieve + cresta central reutilizando los vértices densificados (verts[1::3])
-                ribbon = self.extractor.build_spherical_ribbon_mesh(
-                    raw_pts, radius=r_lift, half_width_rad=0.0085, max_angle_step=0.009
+                line = gl.GLLinePlotItem(
+                    pos=dense, color=(0.12, 0.30, 0.78, 0.98), width=3.2, antialias=True
                 )
-                if ribbon is not None:
-                    verts, faces, v_colors = ribbon
-                    md_ribbon = gl.MeshData(vertexes=verts, faces=faces, vertexColors=v_colors)
-                    ribbon_item = gl.GLMeshItem(
-                        meshdata=md_ribbon,
-                        smooth=True,
-                        glOptions="opaque",
-                    )
-                    line = gl.GLLinePlotItem(
-                        pos=verts[1::3], color=(0.12, 0.36, 0.86, 0.95), width=2.0, antialias=True
-                    )
-                    self.addItem(ribbon_item)
-                    self.addItem(line)
-                    self._stroke_items.extend([ribbon_item, line])
+                self.addItem(line)
+                self._stroke_items.append(line)
 
-            # Puntos naranjas sobre el arco geodésico si hubo salto de pluma levantada entre sub-trazos
             if idx > 0 and self.strokes[idx - 1]:
-                p0 = self.strokes[idx - 1][-1]
-                p1 = stroke_pts[0]
-                arc_pts = self.extractor.slerp_arc(
-                    p0, p1, radius=r_lift * 1.004, max_angle_step=0.04
+                arc_pts = _slerp_arc(
+                    self.strokes[idx - 1][-1],
+                    stroke_pts[0],
+                    radius=r_lift * 1.003,
+                    max_angle_step=0.04,
                 )
                 jump_dots = gl.GLScatterPlotItem(
                     pos=arc_pts, color=(0.85, 0.46, 0.02, 0.90), size=4.0, pxMode=True
@@ -258,41 +283,24 @@ class SphereCanvas3D(gl.GLViewWidget):
             self.update()
             return
 
-        r_lift = self.radius * 1.004
-        r_nodes = r_lift * 1.005
+        r_lift = self.radius * 1.006
         for p_stroke in self.projected_strokes:
             if len(p_stroke) < 2:
                 continue
-            norms = np.maximum(np.linalg.norm(p_stroke, axis=1, keepdims=True), 1e-12)
-            lifted_nodes = p_stroke * (r_nodes / norms)
-
-            proj_ribbon = self.extractor.build_spherical_ribbon_mesh(
-                p_stroke, radius=r_lift, half_width_rad=0.0055, max_angle_step=0.015
+            dense = _densify_spherical(p_stroke, radius=r_lift)
+            line = gl.GLLinePlotItem(
+                pos=dense, color=(0.09, 0.64, 0.29, 0.80), width=2.4, antialias=True
             )
-            if proj_ribbon is not None:
-                verts, faces, _ = proj_ribbon
-                md_proj = gl.MeshData(vertexes=verts, faces=faces)
-                mesh_item = gl.GLMeshItem(
-                    meshdata=md_proj,
-                    smooth=True,
-                    color=(0.09, 0.64, 0.29, 0.42),
-                    glOptions="translucent",
-                )
-                line = gl.GLLinePlotItem(
-                    pos=verts[1::3], color=(0.09, 0.64, 0.29, 0.75), width=1.6, antialias=True
-                )
-                self.addItem(mesh_item)
-                self.addItem(line)
-                self._proj_items.extend([mesh_item, line])
-
+            norms = np.maximum(np.linalg.norm(p_stroke, axis=1, keepdims=True), 1e-12)
+            lifted_nodes = p_stroke * (r_lift * 1.003 / norms)
             dots = gl.GLScatterPlotItem(
                 pos=lifted_nodes, color=(0.09, 0.64, 0.29, 0.95), size=4.5, pxMode=True
             )
+            self.addItem(line)
             self.addItem(dots)
-            self._proj_items.append(dots)
+            self._proj_items.extend([line, dots])
         self.update()
 
-    # --- Eventos de ratón (trazado vs rotación de la esfera) ------------------
     def mousePressEvent(self, event) -> None:  # noqa: N802
         pos = event.position()
         self._last_mouse_pos = pos
@@ -329,7 +337,6 @@ class SphereCanvas3D(gl.GLViewWidget):
             event.accept()
             return
 
-        # Rotación orbital de la esfera con clic derecho, botón central o casilla "Rotar"
         if self._last_mouse_pos is not None and (
             (event.buttons() & Qt.MouseButton.RightButton)
             or (event.buttons() & Qt.MouseButton.MiddleButton)
@@ -353,11 +360,11 @@ class SphereCanvas3D(gl.GLViewWidget):
         event.accept()
 
     def wheelEvent(self, event) -> None:  # noqa: N802
-        """Zoom suave sobre la esfera acotado a un rango seguro."""
         delta = event.angleDelta().y()
         factor = 0.92 if delta > 0 else 1.08
-        new_dist = float(np.clip(self.opts["distance"] * factor, 1.45 * self.radius, 5.0 * self.radius))
-        self.opts["distance"] = new_dist
+        self.opts["distance"] = float(
+            np.clip(self.opts["distance"] * factor, 1.45 * self.radius, 5.0 * self.radius)
+        )
         self.update()
         event.accept()
 
@@ -380,13 +387,11 @@ class View3D(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Columna principal izquierda: cabecera + lienzo 3D + pie
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(28, 24, 24, 24)
         left_layout.setSpacing(14)
 
-        # Barra superior: Título a la izquierda, botones a la derecha
         top_bar = QHBoxLayout()
         header_v = QVBoxLayout()
         header_v.setSpacing(2)
@@ -399,7 +404,6 @@ class View3D(QWidget):
         header_v.addWidget(lbl_sub)
         top_bar.addLayout(header_v, stretch=1)
 
-        # Botones de acción en la esquina superior derecha
         self.btn_rotate_mode = QPushButton(" Girar esfera: OFF")
         self.btn_rotate_mode.setCheckable(True)
         self.btn_rotate_mode.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -427,7 +431,6 @@ class View3D(QWidget):
         top_bar.addWidget(self.btn_clear)
         left_layout.addLayout(top_bar)
 
-        # Contenedor de la esfera 3D
         sphere_frame = QFrame()
         sphere_frame.setObjectName("SphereViewportFrame")
         sphere_frame.setStyleSheet(
@@ -442,7 +445,6 @@ class View3D(QWidget):
         sf_layout.addWidget(self.canvas3d)
         left_layout.addWidget(sphere_frame, stretch=1)
 
-        # Pie inferior
         self.lbl_obs = QLabel(
             "Mantén presionado el clic izquierdo para trazar sobre la esfera. "
             "Clic derecho o rueda para rotar y zoom."
@@ -452,42 +454,22 @@ class View3D(QWidget):
 
         root.addWidget(left_widget, stretch=1)
 
-        # Panel lateral derecho de ranking
         self.ranking_panel = RankingPanel(self)
         root.addWidget(self.ranking_panel)
 
     def _button_style(self) -> str:
         return (
-            "QPushButton { "
-            "background-color: #ffffff; "
-            "border: 1px solid #cbd5e1; "
-            "border-radius: 6px; "
-            "padding: 7px 14px; "
-            "font-size: 12px; "
-            "font-weight: 500; "
-            "color: #334155; "
-            "} "
-            "QPushButton:hover { "
-            "background-color: #f1f5f9; "
-            "border-color: #94a3b8; "
-            "}"
+            "QPushButton { background-color: #ffffff; border: 1px solid #cbd5e1; "
+            "border-radius: 6px; padding: 7px 14px; font-size: 12px; font-weight: 500; color: #334155; } "
+            "QPushButton:hover { background-color: #f1f5f9; border-color: #94a3b8; }"
         )
 
     def _toggle_button_style(self, active: bool) -> str:
         if active:
             return (
-                "QPushButton { "
-                "background-color: #0f766e; "
-                "border: 1px solid #0f766e; "
-                "border-radius: 6px; "
-                "padding: 7px 14px; "
-                "font-size: 12px; "
-                "font-weight: 700; "
-                "color: #ffffff; "
-                "} "
-                "QPushButton:hover { "
-                "background-color: #115e59; "
-                "}"
+                "QPushButton { background-color: #0f766e; border: 1px solid #0f766e; "
+                "border-radius: 6px; padding: 7px 14px; font-size: 12px; font-weight: 700; color: #ffffff; } "
+                "QPushButton:hover { background-color: #115e59; }"
             )
         return self._button_style()
 
@@ -495,7 +477,6 @@ class View3D(QWidget):
         self.canvas3d.reset_camera_view()
 
     def reset_capture(self) -> None:
-        """Cierra la captura actual en 3D y limpia la esfera."""
         self.canvas3d.clear_strokes()
         self.ranking_panel.reset()
 
@@ -519,10 +500,14 @@ class View3D(QWidget):
             )
             return
 
+        is_complete = self.canvas3d._current_stroke is None
+        total_pts = sum(len(s) for s in strokes)
+        use_realtime = (not is_complete) or (total_pts < 12)
+
         res = self.extractor.extract(
             strokes,
             camera_rotation=self.canvas3d.active_camera_orientation,
-            realtime=True,
+            realtime=use_realtime,
         )
         symbols = res.symbols.tolist()
         if not symbols:
@@ -532,8 +517,15 @@ class View3D(QWidget):
             return
 
         ranking, top_letter, current_state, future_symbols = self.classifier.predict_and_project(
-            symbols, max_symbols=45
+            symbols,
+            max_symbols=45,
+            shape=res.shape,
+            complete=is_complete,
         )
+        if is_complete and top_letter and current_state is not None:
+            top_model = self.classifier.models[top_letter]
+            if current_state >= top_model.n_states - 1 and len(symbols) >= 0.75 * top_model.expected_length:
+                future_symbols = future_symbols[:1]
         self.ranking_panel.update_probabilities(
             ranking=ranking,
             viterbi_state=current_state,
@@ -551,4 +543,3 @@ class View3D(QWidget):
             f"(θ={theta_deg:5.1f}°, φ={phi_deg:5.1f}°)  |  Sub-trazos: {len(strokes)}  |  "
             f"T = {len(symbols)}  |  Proyección '{top_letter}': {len(future_symbols)} pasos  |  {sym_txt}"
         )
-

@@ -1,32 +1,18 @@
-"""Guía interactiva y visual de trazado caligráfico de letras (gui/LetterGuide.py).
+"""Vista interactiva de Guía de Letras (gui/LetterGuide.py).
 
-Permite al usuario:
-- Ver la animación automática guiada a velocidad natural de escritura humana (~2.5 a 3.5 segundos por letra).
-- Observar el trazado progresivo continuo a 60 FPS con renglón escolar, punta de lápiz iluminada y flecha direccional.
-- Observar el desplazamiento en el aire (pen-up) entre trazos para letras compuestas (i, j, ñ, t, x).
-- Disfrutar de una pausa de apreciación de 1.5s con la letra terminada antes de reiniciar el bucle.
-- Controlar la reproducción: Pausar / Reanudar, cambiar Velocidad (1x Normal, 0.5x Lento, 1.5x Rápido) o Reiniciar.
-- Practicar libremente con el ratón a mano alzada sobre el lienzo cuando lo desee.
-- Seleccionar cualquiera de las 27 letras del alfabeto español en la cuadrícula lateral.
+Muestra el orden, punto de inicio (1, 2) y dirección exacta de cada sub-trazo
+acorde al dataset entrenado (data/canonical_glyphs.json), permitiendo animar el
+recorrido y practicar el trazo directamente sobre la plantilla.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Sequence
 
-import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import (
-    QBrush,
-    QColor,
-    QFont,
-    QMouseEvent,
-    QPainter,
-    QPainterPath,
-    QPen,
-)
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import (
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -39,689 +25,321 @@ from PySide6.QtWidgets import (
 from core.config import get_config
 from gui.RankingPanel import load_canonical_glyphs
 
+STROKE_COLORS = ("#0f766e", "#d97706", "#7c3aed")
 
-class StrokeDemoCanvas(QWidget):
-    """Lienzo que reproduce la animación caligráfica a velocidad promedio de escritura humana,
 
-    con punta de lápiz visual, líneas de vuelo aéreo y soporte de práctica manual con el ratón.
-    """
-
-    stroke_drawn = Signal()
-    animation_state_changed = Signal(str)
+class GuideCanvas(QFrame):
+    """Lienzo animado de demostración de trazos y práctica libre."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setMinimumSize(360, 360)
+        self.setObjectName("GuideCanvasFrame")
+        self.setMinimumSize(420, 380)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setStyleSheet(
+            "QFrame#GuideCanvasFrame { background-color: #ffffff; border: 1.5px solid #e2e8f0; border-radius: 12px; }"
+        )
         self.setCursor(Qt.CursorShape.CrossCursor)
 
         self._letter: str = "a"
-        self._n_strokes: int = 1
-        self._strokes: list[np.ndarray] = []
+        self._strokes: list[list[tuple[float, float]]] = []
         self._start_points: list[tuple[float, float]] = []
+        self._flat_points: list[tuple[int, float, float]] = []
 
-        # Trazos realizados manualmente por el usuario
+        self._anim_idx: float = 0.0
+        self._is_paused: bool = False
+        self._show_anim: bool = True
+        self._speed_multiplier: float = 1.0
+
         self.user_strokes: list[list[tuple[float, float]]] = []
         self._current_user_stroke: list[tuple[float, float]] | None = None
 
-        # Motor de tiempo paramétrico continuo
-        self._anim_timer = QTimer(self)
-        self._anim_timer.timeout.connect(self._on_anim_tick)
-        self._elapsed_time: float = 0.0      # Tiempo acumulado en segundos dentro del ciclo
-        self._speed_multiplier: float = 1.0  # 1.0x (Normal), 0.5x (Lento), 1.5x (Rápido)
-        self._show_anim: bool = True
-        self._is_paused: bool = False
+        self._timer = QTimer(self)
+        self._timer.setInterval(25)
+        self._timer.timeout.connect(self._tick_animation)
+        self._timer.start()
 
-        # Parámetros del cronograma (timeline)
-        self._timeline_phases: list[dict] = []
-        self._total_cycle_time: float = 4.0  # Duración total del ciclo (escritura + vuelos + pausa)
-        self._pause_hold_time: float = 1.5   # Pausa de apreciación al terminar la letra
-
-        self.setStyleSheet("background-color: #ffffff; border-radius: 12px;")
-
-    # --- Construcción del cronograma a velocidad humana -----------------------
-    def _build_timeline(self) -> None:
-        """Construye un cronograma realista basado en la longitud y complejidad de la letra.
-
-        Tiempo promedio de escritura:
-        - 1 trazo: ~2.4 a 2.8 segundos de trazado continuo.
-        - 2 trazos (i, j, t, x): ~2.2s trazo principal + ~0.45s vuelo + ~0.7s segundo trazo (~3.35s).
-        - 3 trazos (ñ): ~2.2s cuerpo n + ~0.45s vuelo + ~0.8s virgulilla (~3.45s).
-        - Pausa final con letra completa: 1.5 segundos antes de reiniciar el bucle.
-        """
-        self._timeline_phases.clear()
-        if not self._strokes:
-            self._total_cycle_time = 1.0
-            return
-
-        # Calcular longitud espacial de cada trazo
-        lengths = []
-        for s in self._strokes:
-            if len(s) >= 2:
-                slen = float(np.sum(np.linalg.norm(np.diff(s, axis=0), axis=1)))
-                lengths.append(max(slen, 0.08))
-            else:
-                lengths.append(0.18)  # Punto aislado (ej. punto de la 'i' o 'j')
-
-        total_len = max(sum(lengths), 1e-4)
-
-        # Duración total de tinta en segundos (promedio caligráfico humano)
-        base_ink_time = 2.4 + 0.35 * max(0, len(self._strokes) - 1)
-        flight_duration = 0.45  # Tiempo que tarda la mano en levantarse y desplazarse
-
-        current_t = 0.0
-        for i, slen in enumerate(lengths):
-            # Duración proporcional a la longitud geométrica del trazo
-            stroke_dur = max(0.55, base_ink_time * (slen / total_len))
-            self._timeline_phases.append({
-                "type": "stroke",
-                "stroke_idx": i,
-                "t_start": current_t,
-                "t_end": current_t + stroke_dur,
-                "duration": stroke_dur,
-                "length": slen,
-            })
-            current_t += stroke_dur
-
-            # Si hay un siguiente trazo, agregar fase de vuelo aéreo (pen-up)
-            if i < len(self._strokes) - 1:
-                self._timeline_phases.append({
-                    "type": "flight",
-                    "from_idx": i,
-                    "to_idx": i + 1,
-                    "t_start": current_t,
-                    "t_end": current_t + flight_duration,
-                    "duration": flight_duration,
-                })
-                current_t += flight_duration
-
-        # Fase final de apreciación: letra completada en reposo
-        self._timeline_phases.append({
-            "type": "pause",
-            "t_start": current_t,
-            "t_end": current_t + self._pause_hold_time,
-            "duration": self._pause_hold_time,
-        })
-        current_t += self._pause_hold_time
-
-        self._total_cycle_time = current_t
-
-    def set_glyph_data(
-        self,
-        letter: str,
-        n_strokes: int,
-        strokes: Sequence[Sequence[Sequence[float]]],
-        start_points: Sequence[Sequence[float]],
-    ) -> None:
-        """Actualiza la letra a demostrar, recalcula el cronograma y reinicia."""
+    def set_letter(self, letter: str) -> None:
         self._letter = letter
-        self._n_strokes = max(1, n_strokes)
-        self._strokes = [np.asarray(s, dtype=float) for s in strokes]
-        self._start_points = [(float(p[0]), float(p[1])) for p in start_points]
-        self._build_timeline()
-        self.clear_user_drawing(restart_anim=True)
-
-    def clear_user_drawing(self, restart_anim: bool = True) -> None:
-        """Borra los trazos del usuario para volver a practicar."""
+        glyph = load_canonical_glyphs().get(letter, {})
+        raw_strokes = glyph.get("strokes", [])
+        self._strokes = [
+            [(float(p[0]), float(p[1])) for p in st if len(p) >= 2]
+            for st in raw_strokes
+            if len(st) > 0
+        ]
+        self._start_points = [st[0] for st in self._strokes if st]
+        self._flat_points = [
+            (s_idx, x, y)
+            for s_idx, st in enumerate(self._strokes)
+            for (x, y) in st
+        ]
+        self._anim_idx = 0.0
+        self._show_anim = True
         self.user_strokes.clear()
         self._current_user_stroke = None
-        if restart_anim:
-            self.restart_animation()
-        else:
-            self.update()
+        self.update()
 
     def restart_animation(self) -> None:
-        """Reinicia la animación desde el segundo cero a velocidad normal."""
+        self._anim_idx = 0.0
         self._show_anim = True
         self._is_paused = False
-        self._elapsed_time = 0.0
-        if not self._anim_timer.isActive():
-            self._anim_timer.start(20)  # ~50 FPS
         self.update()
-        self.animation_state_changed.emit("Iniciando trazo guiado...")
 
-    def toggle_play_pause(self) -> bool:
-        """Alterna entre pausar y reanudar la animación."""
-        self._is_paused = not self._is_paused
-        if not self._is_paused and not self._anim_timer.isActive():
-            self._anim_timer.start(20)
+    def clear_user_strokes(self) -> None:
+        self.user_strokes.clear()
+        self._current_user_stroke = None
         self.update()
-        state_text = "Pausada" if self._is_paused else "Trazando en vivo..."
-        self.animation_state_changed.emit(state_text)
-        return self._is_paused
 
-    def set_speed_multiplier(self, mult: float) -> None:
-        """Ajusta el multiplicador de velocidad (1.0 = normal ~2.8s, 0.5 = lento ~5.5s, 1.5 = rápido)."""
-        self._speed_multiplier = max(0.2, float(mult))
-
-    def showEvent(self, event) -> None:  # noqa: N802
-        super().showEvent(event)
-        if self._show_anim and not self._is_paused and not self._anim_timer.isActive():
-            self._anim_timer.start(20)
-
-    def hideEvent(self, event) -> None:  # noqa: N802
-        super().hideEvent(event)
-        if self._anim_timer.isActive():
-            self._anim_timer.stop()
-
-    def _on_anim_tick(self) -> None:
-        if not self._show_anim or self._is_paused:
+    def _tick_animation(self) -> None:
+        if self._is_paused or not self._show_anim or not self._flat_points:
             return
-
-        dt = 0.020 * self._speed_multiplier
-        self._elapsed_time += dt
-
-        if self._elapsed_time >= self._total_cycle_time:
-            self._elapsed_time = 0.0  # Reiniciar bucle suavemente
-
+        self._anim_idx += 1.4 * self._speed_multiplier
+        if self._anim_idx >= len(self._flat_points) + 18:
+            self._anim_idx = 0.0
         self.update()
 
-    # --- Eventos de ratón para dibujo a mano alzada opcional --------------------
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+    def _to_screen(self, nx: float, ny: float, box: QRectF) -> QPointF:
+        return QPointF(box.left() + nx * box.width(), box.top() + ny * box.height())
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
-            self._show_anim = False
             pos = event.position()
             self._current_user_stroke = [(pos.x(), pos.y())]
             self.user_strokes.append(self._current_user_stroke)
             self.update()
-            self.stroke_drawn.emit()
 
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if self._current_user_stroke is not None and (event.buttons() & Qt.MouseButton.LeftButton):
             pos = event.position()
             self._current_user_stroke.append((pos.x(), pos.y()))
             self.update()
 
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
             self._current_user_stroke = None
             self.update()
-            self.stroke_drawn.emit()
-
-    # --- Renderizado de alta definición con QPainter ---------------------------
-    @staticmethod
-    def _draw_stroke_pts(
-        painter: QPainter, pts: np.ndarray, dot_color: QColor, dot_radius: float
-    ) -> None:
-        """Dibuja un sub-trazo (punto aislado o polilínea continua) sobre el QPainter."""
-        if len(pts) == 0:
-            return
-        if len(pts) == 1:
-            painter.setBrush(QBrush(dot_color))
-            painter.drawEllipse(QPointF(pts[0, 0], pts[0, 1]), dot_radius, dot_radius)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-        else:
-            path = QPainterPath()
-            path.moveTo(pts[0, 0], pts[0, 1])
-            for k in range(1, len(pts)):
-                path.lineTo(pts[k, 0], pts[k, 1])
-            painter.drawPath(path)
 
     def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        w = float(self.width())
-        h = float(self.height())
+        w, h = float(self.width()), float(self.height())
+        side = min(w, h) * 0.68
+        box = QRectF((w - side) / 2.0, (h - side) / 2.0, side, side)
 
-        # Fondo con tarjeta redondeada
-        rect = QRectF(0, 0, w, h)
-        painter.setPen(QPen(QColor("#e2e8f0"), 1.5))
-        painter.setBrush(QBrush(QColor("#ffffff")))
-        painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 12, 12)
-
-        # Renglón caligráfico escolar
-        pad_x = 36.0
-        pad_y = 48.0
-        box_w = w - 2 * pad_x
-        box_h = h - 2 * pad_y
-
-        pen_guide = QPen(QColor("#cbd5e1"), 1.0, Qt.PenStyle.DashLine)
-        pen_base = QPen(QColor("#94a3b8"), 1.3, Qt.PenStyle.SolidLine)
-
-        y_top = pad_y + 0.15 * box_h
-        y_mid = pad_y + 0.40 * box_h
-        y_base = pad_y + 0.72 * box_h
-        y_desc = pad_y + 0.92 * box_h
-
-        painter.setPen(pen_guide)
-        painter.drawLine(QPointF(pad_x, y_top), QPointF(w - pad_x, y_top))
-        painter.drawLine(QPointF(pad_x, y_mid), QPointF(w - pad_x, y_mid))
-        painter.setPen(pen_base)
-        painter.drawLine(QPointF(pad_x, y_base), QPointF(w - pad_x, y_base))
-        painter.setPen(pen_guide)
-        painter.drawLine(QPointF(pad_x, y_desc), QPointF(w - pad_x, y_desc))
-
-        if not self._strokes:
-            return
-
-        box_side = min(box_w, box_h)
-        cx = pad_x + 0.5 * (box_w - box_side)
-        cy = pad_y + 0.5 * (box_h - box_side)
-
-        def to_px(norm_xy: np.ndarray) -> np.ndarray:
-            return np.column_stack([cx + norm_xy[:, 0] * box_side, cy + norm_xy[:, 1] * box_side])
-
-        # 1. Traza fantasma en gris tenue (guía base de fondo)
-        ghost_color = QColor("#e2e8f0")
-        pen_ghost = QPen(
-            ghost_color, 7.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin
-        )
-        painter.setPen(pen_ghost)
+        # Recuadro guía y ejes centrales
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        for s in self._strokes:
-            if len(s) > 0:
-                self._draw_stroke_pts(painter, to_px(s), ghost_color, 4.0)
+        painter.setPen(QPen(QColor("#e2e8f0"), 1.4, Qt.PenStyle.DashLine))
+        painter.drawRoundedRect(box, 12.0, 12.0)
+        painter.setPen(QPen(QColor("#f1f5f9"), 1.2, Qt.PenStyle.DashLine))
+        painter.drawLine(QPointF(box.left(), box.center().y()), QPointF(box.right(), box.center().y()))
+        painter.drawLine(QPointF(box.center().x(), box.top()), QPointF(box.center().x(), box.bottom()))
 
-        # 2. Líneas punteadas de desplazamiento entre trazos (vuelo en el aire)
-        if len(self._strokes) > 1:
-            pen_air = QPen(QColor("#94a3b8"), 1.2, Qt.PenStyle.DotLine)
-            painter.setPen(pen_air)
-            for i in range(len(self._strokes) - 1):
-                s1 = self._strokes[i]
-                s2 = self._strokes[i + 1]
-                if len(s1) > 0 and len(s2) > 0:
-                    p_end = to_px(s1[-1:])
-                    p_next = to_px(s2[:1])
-                    painter.drawLine(
-                        QPointF(p_end[0, 0], p_end[0, 1]),
-                        QPointF(p_next[0, 0], p_next[0, 1]),
-                    )
+        # 1. Trazos base completos con flechas de dirección
+        for s_idx, st in enumerate(self._strokes):
+            color_hex = STROKE_COLORS[s_idx % len(STROKE_COLORS)]
+            base_color = QColor(color_hex)
+            base_color.setAlpha(65)
+            pts = [self._to_screen(x, y, box) for x, y in st]
+            if len(pts) == 1:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(base_color)
+                painter.drawEllipse(pts[0], 6.0, 6.0)
+            elif len(pts) >= 2:
+                pen = QPen(base_color, 6.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(pen)
+                path = QPainterPath(pts[0])
+                for p in pts[1:]:
+                    path.lineTo(p)
+                painter.drawPath(path)
+                self._draw_direction_arrows(painter, pts, QColor(color_hex))
 
-        # 3. Animación guiada en tiempo real según el cronograma
-        active_badge_idx = 0
-        current_tip: QPointF | None = None
-        current_dir: tuple[float, float] | None = None
-        is_pen_down = True
+            if s_idx > 0 and self._strokes[s_idx - 1]:
+                p_prev = self._to_screen(*self._strokes[s_idx - 1][-1], box)
+                p_curr = pts[0]
+                painter.setPen(QPen(QColor("#d97706"), 1.5, Qt.PenStyle.DotLine))
+                painter.drawLine(p_prev, p_curr)
 
-        if self._show_anim and not self.user_strokes and self._timeline_phases:
-            # Identificar en qué fase nos encontramos
-            curr_phase = self._timeline_phases[-1]
-            for ph in self._timeline_phases:
-                if ph["t_start"] <= self._elapsed_time < ph["t_end"]:
-                    curr_phase = ph
-                    break
+        # 2. Progreso animado del trazo
+        if self._show_anim and self._flat_points:
+            limit = min(int(self._anim_idx), len(self._flat_points))
+            drawn_by_stroke: dict[int, list[QPointF]] = {}
+            for i in range(limit):
+                s_idx, nx, ny = self._flat_points[i]
+                drawn_by_stroke.setdefault(s_idx, []).append(self._to_screen(nx, ny, box))
 
-            # Pluma para el trazo en verde esmeralda cálido
-            ink_color = QColor("#16a34a")
-            pen_ink = QPen(
-                ink_color, 5.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin
-            )
-            painter.setPen(pen_ink)
-
-            if curr_phase["type"] == "stroke":
-                target_idx = curr_phase["stroke_idx"]
-                active_badge_idx = target_idx
-                is_pen_down = True
-
-                # Dibujar los trazos anteriores completos
-                for prev_i in range(target_idx):
-                    self._draw_stroke_pts(painter, to_px(self._strokes[prev_i]), ink_color, 3.5)
-
-                # Dibujar el trazo actual en progreso continuo
-                curr_pts = to_px(self._strokes[target_idx])
-                tau = np.clip((self._elapsed_time - curr_phase["t_start"]) / curr_phase["duration"], 0.0, 1.0)
-
-                if len(curr_pts) == 1:
-                    self._draw_stroke_pts(painter, curr_pts, ink_color, 3.5)
-                    current_tip = QPointF(curr_pts[0, 0], curr_pts[0, 1])
-                else:
-                    segs = np.linalg.norm(np.diff(curr_pts, axis=0), axis=1)
-                    cum = np.r_[0.0, np.cumsum(segs)]
-                    target_dist = tau * cum[-1]
-
-                    idx = int(np.searchsorted(cum, target_dist, side="right")) - 1
-                    idx = min(max(idx, 0), len(curr_pts) - 2)
-                    frac = (target_dist - cum[idx]) / max(segs[idx], 1e-6)
-                    interp_pt = curr_pts[idx] + np.clip(frac, 0.0, 1.0) * (curr_pts[idx + 1] - curr_pts[idx])
-
-                    self._draw_stroke_pts(painter, np.vstack([curr_pts[: idx + 1], interp_pt]), ink_color, 3.5)
-                    current_tip = QPointF(interp_pt[0], interp_pt[1])
-                    dx = float(curr_pts[idx + 1, 0] - curr_pts[idx, 0])
-                    dy = float(curr_pts[idx + 1, 1] - curr_pts[idx, 1])
-                    norm = math.hypot(dx, dy)
-                    if norm > 1e-5:
-                        current_dir = (dx / norm, dy / norm)
-
-            elif curr_phase["type"] == "flight":
-                # Lápiz levantado desplazándose hacia el siguiente punto de inicio
-                from_idx = curr_phase["from_idx"]
-                to_idx = curr_phase["to_idx"]
-                active_badge_idx = to_idx
-                is_pen_down = False
-
-                # Todos los trazos hasta from_idx están completos
-                for prev_i in range(to_idx):
-                    self._draw_stroke_pts(painter, to_px(self._strokes[prev_i]), ink_color, 3.5)
-
-                # Interpolar posición aérea del lápiz
-                p_from = to_px(self._strokes[from_idx][-1:])
-                p_to = to_px(self._strokes[to_idx][:1])
-                tau = np.clip((self._elapsed_time - curr_phase["t_start"]) / curr_phase["duration"], 0.0, 1.0)
-                tau_smooth = 0.5 - 0.5 * math.cos(math.pi * tau)
-                pos_x = p_from[0, 0] + tau_smooth * (p_to[0, 0] - p_from[0, 0])
-                pos_y = p_from[0, 1] + tau_smooth * (p_to[0, 1] - p_from[0, 1])
-                current_tip = QPointF(pos_x, pos_y)
-
-                dx = float(p_to[0, 0] - p_from[0, 0])
-                dy = float(p_to[0, 1] - p_from[0, 1])
-                norm = math.hypot(dx, dy)
-                if norm > 1e-5:
-                    current_dir = (dx / norm, dy / norm)
-
-            elif curr_phase["type"] == "pause":
-                # Letra 100% completada; contemplación estática
-                active_badge_idx = -1
-                current_tip = None
-                for s in self._strokes:
-                    self._draw_stroke_pts(painter, to_px(s), ink_color, 3.5)
-
-            # Dibujar el puntero del lápiz (estilo visual destacado)
-            if current_tip is not None:
-                if is_pen_down:
-                    # Trazo activo en papel: halo verde vivo y núcleo protector
+            for s_idx, pts in drawn_by_stroke.items():
+                c = QColor(STROKE_COLORS[s_idx % len(STROKE_COLORS)])
+                if len(pts) == 1:
                     painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QBrush(QColor(22, 163, 74, 55)))
-                    painter.drawEllipse(current_tip, 13.0, 13.0)
-
-                    painter.setPen(QPen(QColor("#ffffff"), 2.0))
-                    painter.setBrush(QBrush(QColor("#15803d")))
-                    painter.drawEllipse(current_tip, 6.5, 6.5)
-
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QBrush(QColor("#ffffff")))
-                    painter.drawEllipse(current_tip, 2.2, 2.2)
-
-                    # Flecha direccional
-                    if current_dir is not None:
-                        ux, uy = current_dir
-                        arrow_tip = QPointF(current_tip.x() + ux * 12.0, current_tip.y() + uy * 12.0)
-                        painter.setPen(QPen(QColor("#15803d"), 1.8, Qt.PenStyle.SolidLine))
-                        painter.drawLine(current_tip, arrow_tip)
-                else:
-                    # Lápiz en el aire: halo azulado tenue
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QBrush(QColor(37, 99, 235, 45)))
-                    painter.drawEllipse(current_tip, 11.0, 11.0)
-
-                    painter.setPen(QPen(QColor("#ffffff"), 1.8))
-                    painter.setBrush(QBrush(QColor("#2563eb")))
-                    painter.drawEllipse(current_tip, 5.5, 5.5)
-
-        # 4. Trazos realizados manualmente por el usuario con el ratón
-        if self.user_strokes:
-            pen_user = QPen(
-                QColor("#2563eb"), 4.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin
-            )
-            painter.setPen(pen_user)
-            for stroke in self.user_strokes:
-                if not stroke:
-                    continue
-                if len(stroke) == 1:
-                    painter.setBrush(QBrush(QColor("#2563eb")))
-                    painter.drawEllipse(QPointF(*stroke[0]), 3.5, 3.5)
+                    painter.setBrush(c)
+                    painter.drawEllipse(pts[0], 5.5, 5.5)
+                elif len(pts) >= 2:
+                    pen = QPen(c, 4.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
                     painter.setBrush(Qt.BrushStyle.NoBrush)
-                else:
-                    path = QPainterPath()
-                    path.moveTo(QPointF(*stroke[0]))
-                    for pt in stroke[1:]:
-                        path.lineTo(QPointF(*pt))
+                    painter.setPen(pen)
+                    path = QPainterPath(pts[0])
+                    for p in pts[1:]:
+                        path.lineTo(p)
                     painter.drawPath(path)
 
-        # 5. Círculos numerados (1, 2, 3...) en el punto de inicio de cada trazo
-        for idx, sp in enumerate(self._start_points):
-            sp_px = QPointF(cx + sp[0] * box_side, cy + sp[1] * box_side)
+            if 0 < limit <= len(self._flat_points):
+                s_idx, nx, ny = self._flat_points[limit - 1]
+                head = self._to_screen(nx, ny, box)
+                painter.setPen(QPen(QColor("#ffffff"), 2.0))
+                painter.setBrush(QColor(STROKE_COLORS[s_idx % len(STROKE_COLORS)]))
+                painter.drawEllipse(head, 7.0, 7.0)
 
-            is_active_badge = (idx == active_badge_idx) and self._show_anim
-
-            if is_active_badge:
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(QColor(22, 163, 74, 60)))
-                painter.drawEllipse(sp_px, 17.5, 17.5)
-
-            radius = 11.5
+        # 3. Marcadores numerados de inicio (1, 2...)
+        for s_idx, (sx, sy) in enumerate(self._start_points):
+            sp = self._to_screen(sx, sy, box)
+            c = QColor(STROKE_COLORS[s_idx % len(STROKE_COLORS)])
             painter.setPen(QPen(QColor("#ffffff"), 2.0))
-            painter.setBrush(QBrush(QColor("#15803d" if is_active_badge else "#16a34a")))
-            painter.drawEllipse(sp_px, radius, radius)
-
+            painter.setBrush(c)
+            painter.drawEllipse(sp, 11.0, 11.0)
             painter.setPen(QColor("#ffffff"))
-            font = QFont("Segoe UI", 9, QFont.Weight.Bold)
-            painter.setFont(font)
-            text = str(idx + 1)
-            rect_num = QRectF(sp_px.x() - radius, sp_px.y() - radius, 2 * radius, 2 * radius)
-            painter.drawText(rect_num, Qt.AlignmentFlag.AlignCenter, text)
+            painter.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            painter.drawText(QRectF(sp.x() - 11, sp.y() - 11, 22, 22), Qt.AlignmentFlag.AlignCenter, str(s_idx + 1))
+
+        # 4. Trazos de práctica del usuario
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        user_pen = QPen(QColor("#1e293b"), 3.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(user_pen)
+        for st in self.user_strokes:
+            if len(st) >= 2:
+                path = QPainterPath(QPointF(*st[0]))
+                for x, y in st[1:]:
+                    path.lineTo(QPointF(x, y))
+                painter.drawPath(path)
+
+    @staticmethod
+    def _draw_direction_arrows(painter: QPainter, pts: list[QPointF], color: QColor) -> None:
+        if len(pts) < 6:
+            return
+        indices = [len(pts) // 2, len(pts) - 1]
+        arrow_color = QColor(color)
+        arrow_color.setAlpha(190)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(arrow_color)
+        for idx in indices:
+            p_prev = pts[max(0, idx - 3)]
+            p_curr = pts[idx]
+            dx, dy = p_curr.x() - p_prev.x(), p_curr.y() - p_prev.y()
+            if math.hypot(dx, dy) < 2.0:
+                continue
+            angle = math.atan2(dy, dx)
+            size = 7.5
+            p1 = QPointF(p_curr.x() - size * math.cos(angle - 0.5), p_curr.y() - size * math.sin(angle - 0.5))
+            p2 = QPointF(p_curr.x() - size * math.cos(angle + 0.5), p_curr.y() - size * math.sin(angle + 0.5))
+            painter.drawPolygon(QPolygonF([p_curr, p1, p2]))
 
 
 class LetterGuideView(QWidget):
-    """Vista completa de 'Guía de letras' con animación a velocidad de escritura natural,
-
-    controles de reproducción (pausar, velocidad, reiniciar) y selector de 27 letras.
-    """
-
-    letter_selected = Signal(str)
+    """Vista de Guía de Letras con selector de las 27 letras y animación paso a paso."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.cfg = get_config()
-        self.glyphs = load_canonical_glyphs()
         self.current_letter: str = "a"
         self._buttons: dict[str, QPushButton] = {}
-        self._speed_modes: list[tuple[str, float]] = [
-            ("Velocidad: 1x (Normal ~2.8s)", 1.0),
-            ("Velocidad: 0.5x (Lento ~5.5s)", 0.5),
-            ("Velocidad: 1.5x (Rápido ~1.8s)", 1.5),
-        ]
-        self._current_speed_idx: int = 0
 
-        self._build_ui()
+        root = QVBoxLayout(self)
+        root.setContentsMargins(28, 22, 28, 22)
+        root.setSpacing(12)
+
+        top_bar = QHBoxLayout()
+        header_v = QVBoxLayout()
+        lbl_title = QLabel("Guía de letras")
+        lbl_title.setStyleSheet("font-size: 20px; font-weight: 700; color: #1e293b;")
+        lbl_sub = QLabel("Orden, punto de inicio y dirección exacta de cada letra en el dataset")
+        lbl_sub.setStyleSheet("font-size: 13px; color: #64748b;")
+        header_v.addWidget(lbl_title)
+        header_v.addWidget(lbl_sub)
+        top_bar.addLayout(header_v, stretch=1)
+
+        self.btn_play_pause = QPushButton("Pausar")
+        self.btn_speed = QPushButton("Velocidad: 1.0x")
+        self.btn_restart = QPushButton("Reiniciar animación")
+        self.btn_clear = QPushButton("Limpiar trazo")
+
+        for b in (self.btn_play_pause, self.btn_speed, self.btn_restart, self.btn_clear):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(
+                "QPushButton { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; "
+                "padding: 6px 12px; font-size: 12px; font-weight: 500; color: #334155; } "
+                "QPushButton:hover { background: #f1f5f9; }"
+            )
+            top_bar.addWidget(b)
+
+        self.btn_play_pause.clicked.connect(self._toggle_pause)
+        self.btn_speed.clicked.connect(self._cycle_speed)
+        self.btn_restart.clicked.connect(self._on_restart)
+        self.btn_clear.clicked.connect(lambda: self.demo_canvas.clear_user_strokes())
+        root.addLayout(top_bar)
+
+        # Selector de las 27 letras
+        grid = QGridLayout()
+        grid.setSpacing(6)
+        for i, ch in enumerate(self.cfg.letters):
+            btn = QPushButton(ch)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedHeight(34)
+            btn.clicked.connect(lambda _=False, c=ch: self.select_letter(c))
+            self._buttons[ch] = btn
+            grid.addWidget(btn, i // 14, i % 14)
+        root.addLayout(grid)
+
+        self.lbl_info = QLabel()
+        self.lbl_info.setStyleSheet(
+            "font-size: 13px; font-weight: 500; color: #0f766e; background: #f0fdf4; "
+            "border: 1px solid #bbf7d0; border-radius: 8px; padding: 8px 12px;"
+        )
+        root.addWidget(self.lbl_info)
+
+        self.demo_canvas = GuideCanvas(self)
+        root.addWidget(self.demo_canvas, stretch=1)
+
         self.select_letter("a")
 
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(16)
-
-        # Encabezado
-        header_box = QVBoxLayout()
-        header_box.setSpacing(4)
-        title = QLabel("Guía de letras")
-        title.setStyleSheet("font-size: 20px; font-weight: 700; color: #1e293b;")
-        subtitle = QLabel(
-            "Animación a velocidad de escritura humana. "
-            "Sigue el punto numerado (1, 2) y el recorrido del lápiz sobre el renglón."
-        )
-        subtitle.setStyleSheet("font-size: 13px; color: #64748b;")
-        header_box.addWidget(title)
-        header_box.addWidget(subtitle)
-        layout.addLayout(header_box)
-
-        # Área principal dividida
-        main_h = QHBoxLayout()
-        main_h.setSpacing(24)
-
-        # Columna Izquierda: Lienzo interactivo + barra de controles
-        left_col = QVBoxLayout()
-        left_col.setSpacing(10)
-
-        self.demo_canvas = StrokeDemoCanvas(self)
-        self.demo_canvas.stroke_drawn.connect(self._on_user_stroke_updated)
-        self.demo_canvas.animation_state_changed.connect(self._on_anim_state_changed)
-        left_col.addWidget(self.demo_canvas, stretch=1)
-
-        bottom_bar = QHBoxLayout()
-        bottom_bar.setSpacing(8)
-
-        self.lbl_info = QLabel("Letra a  —  1 trazo")
-        self.lbl_info.setStyleSheet("font-size: 13px; font-weight: 600; color: #334155;")
-        bottom_bar.addWidget(self.lbl_info)
-
-        self.lbl_status = QLabel("Trazando en vivo...")
-        self.lbl_status.setStyleSheet("font-size: 12px; color: #16a34a; font-weight: 500; margin-left: 8px;")
-        bottom_bar.addWidget(self.lbl_status)
-
-        bottom_bar.addStretch()
-
-        # Botón Pausar / Reanudar
-        self.btn_play_pause = QPushButton("⏸ Pausar")
-        self.btn_play_pause.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_play_pause.setStyleSheet(
-            "QPushButton { background-color: #ffffff; color: #334155; border: 1px solid #cbd5e1; "
-            "border-radius: 6px; padding: 6px 12px; font-size: 12px; font-weight: 500; } "
-            "QPushButton:hover { background-color: #f1f5f9; }"
-        )
-        self.btn_play_pause.clicked.connect(self._on_play_pause_clicked)
-        bottom_bar.addWidget(self.btn_play_pause)
-
-        # Botón Velocidad
-        self.btn_speed = QPushButton(self._speed_modes[0][0])
-        self.btn_speed.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_speed.setStyleSheet(
-            "QPushButton { background-color: #ffffff; color: #334155; border: 1px solid #cbd5e1; "
-            "border-radius: 6px; padding: 6px 10px; font-size: 12px; font-weight: 500; } "
-            "QPushButton:hover { background-color: #f1f5f9; }"
-        )
-        self.btn_speed.clicked.connect(self._on_speed_clicked)
-        bottom_bar.addWidget(self.btn_speed)
-
-        # Botón Reiniciar
-        self.btn_replay = QPushButton("Reiniciar")
-        self.btn_replay.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_replay.setStyleSheet(
-            "QPushButton { background-color: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; "
-            "border-radius: 6px; padding: 6px 12px; font-size: 12px; font-weight: 600; } "
-            "QPushButton:hover { background-color: #dcfce7; }"
-        )
-        self.btn_replay.clicked.connect(self.demo_canvas.restart_animation)
-        self.btn_restart = self.btn_replay
-        bottom_bar.addWidget(self.btn_replay)
-
-        # Botón Limpiar trazo manual
-        self.btn_clear = QPushButton("Limpiar trazo")
-        self.btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_clear.setStyleSheet(
-            "QPushButton { background-color: #ffffff; color: #64748b; border: 1px solid #e2e8f0; "
-            "border-radius: 6px; padding: 6px 10px; font-size: 12px; font-weight: 500; } "
-            "QPushButton:hover { background-color: #f8fafc; color: #334155; }"
-        )
-        self.btn_clear.clicked.connect(self._on_clear_clicked)
-        bottom_bar.addWidget(self.btn_clear)
-
-        left_col.addLayout(bottom_bar)
-        main_h.addLayout(left_col, stretch=5)
-
-        # Columna Derecha: Cuadrícula de 27 tarjetas
-        right_col = QVBoxLayout()
-        right_col.setSpacing(8)
-
-        lbl_grid_title = QLabel("Selecciona una letra:")
-        lbl_grid_title.setStyleSheet("font-size: 13px; font-weight: 600; color: #475569;")
-        right_col.addWidget(lbl_grid_title)
-
-        grid_widget = QWidget()
-        grid = QGridLayout(grid_widget)
-        grid.setSpacing(8)
-        grid.setContentsMargins(0, 0, 0, 0)
-
-        letters = list(self.cfg.letters)
-        n_cols = 5
-        for idx, letter in enumerate(letters):
-            row = idx // n_cols
-            col = idx % n_cols
-            btn = QPushButton(letter)
-            btn.setFixedSize(50, 50)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(self._btn_style(selected=False))
-            btn.clicked.connect(lambda checked, l=letter: self.select_letter(l))
-            grid.addWidget(btn, row, col)
-            self._buttons[letter] = btn
-
-        right_col.addWidget(grid_widget)
-        right_col.addStretch()
-        main_h.addLayout(right_col, stretch=4)
-
-        layout.addLayout(main_h, stretch=1)
-
-    # --- Acciones de control --------------------------------------------------
-    def _on_play_pause_clicked(self) -> None:
-        is_paused = self.demo_canvas.toggle_play_pause()
-        self.btn_play_pause.setText("▶ Reanudar" if is_paused else "⏸ Pausar")
-
-    def _on_speed_clicked(self) -> None:
-        self._current_speed_idx = (self._current_speed_idx + 1) % len(self._speed_modes)
-        label, mult = self._speed_modes[self._current_speed_idx]
-        self.btn_speed.setText(label)
-        self.demo_canvas.set_speed_multiplier(mult)
-
-    def _on_anim_state_changed(self, state: str) -> None:
-        self.lbl_status.setText(state)
-        if "completada" in state.lower():
-            self.lbl_status.setStyleSheet("font-size: 12px; color: #0284c7; font-weight: 500; margin-left: 8px;")
-        elif "pausada" in state.lower():
-            self.lbl_status.setStyleSheet("font-size: 12px; color: #d97706; font-weight: 500; margin-left: 8px;")
-        elif "levantando" in state.lower():
-            self.lbl_status.setStyleSheet("font-size: 12px; color: #2563eb; font-weight: 500; margin-left: 8px;")
-        else:
-            self.lbl_status.setStyleSheet("font-size: 12px; color: #16a34a; font-weight: 500; margin-left: 8px;")
-
-    def _on_user_stroke_updated(self) -> None:
-        n = len(self.demo_canvas.user_strokes)
-        if n > 0:
-            plural = "s" if n > 1 else ""
-            self.lbl_status.setText(f"Trazando a mano ({n} trazo{plural})...")
-            self.lbl_status.setStyleSheet("font-size: 12px; font-weight: 600; color: #2563eb; margin-left: 8px;")
-
-    def _on_clear_clicked(self) -> None:
-        self.demo_canvas.clear_user_drawing(restart_anim=True)
-        self.btn_play_pause.setText("⏸ Pausar")
-
-    def _btn_style(self, selected: bool) -> str:
-        if selected:
-            return (
-                "QPushButton { "
-                "background-color: #f0fdf4; "
-                "border: 2px solid #16a34a; "
-                "border-radius: 8px; "
-                "font-size: 18px; "
-                "font-weight: 700; "
-                "color: #15803d; "
-                "}"
-            )
-        return (
-            "QPushButton { "
-            "background-color: #ffffff; "
-            "border: 1px solid #e2e8f0; "
-            "border-radius: 8px; "
-            "font-size: 17px; "
-            "font-weight: 600; "
-            "color: #334155; "
-            "} "
-            "QPushButton:hover { "
-            "background-color: #f8fafc; "
-            "border-color: #cbd5e1; "
-            "}"
-        )
-
     def select_letter(self, letter: str) -> None:
-        """Selecciona una letra, actualiza el resaltado visual y recalcula la animación."""
-        if self.current_letter in self._buttons:
-            self._buttons[self.current_letter].setStyleSheet(self._btn_style(selected=False))
-
         self.current_letter = letter
-        if letter in self._buttons:
-            self._buttons[letter].setStyleSheet(self._btn_style(selected=True))
-
-        g = self.glyphs.get(letter)
-        if g is not None:
-            n_st = int(g.get("n_strokes", 1))
-            strokes = g.get("strokes", [])
-            start_pts = g.get("start_points", [])
+        self.demo_canvas.set_letter(letter)
+        n_st = len(self.demo_canvas._strokes)
+        if n_st == 1:
+            desc = f"Letra {letter} — 1 trazo continuo: Inicia en el círculo 1 (verde) y sigue las flechas sin levantar el ratón."
         else:
-            n_st = 1
-            strokes = []
-            start_pts = []
+            desc = (
+                f"Letra {letter} — {n_st} sub-trazos: 1) Traza primero desde el círculo 1 (verde). "
+                "2) Levanta el ratón y completa el segundo trazo desde el círculo 2 (naranja)."
+            )
+        self.lbl_info.setText(desc + " Puedes dibujar encima para practicar.")
 
-        plural = "s" if n_st > 1 else ""
-        self.lbl_info.setText(f"Letra {letter}  —  {n_st} trazo{plural}")
-        self.btn_play_pause.setText("⏸ Pausar")
-        self.demo_canvas.set_glyph_data(letter, n_st, strokes, start_pts)
-        self.letter_selected.emit(letter)
+        for ch, btn in self._buttons.items():
+            if ch == letter:
+                btn.setStyleSheet(
+                    "QPushButton { background: #0f766e; color: #ffffff; font-weight: 700; "
+                    "border: 1px solid #0f766e; border-radius: 6px; font-size: 13px; }"
+                )
+            else:
+                btn.setStyleSheet(
+                    "QPushButton { background: #ffffff; color: #334155; font-weight: 600; "
+                    "border: 1px solid #e2e8f0; border-radius: 6px; font-size: 13px; } "
+                    "QPushButton:hover { background: #f1f5f9; }"
+                )
+
+    def _toggle_pause(self) -> None:
+        self.demo_canvas._is_paused = not self.demo_canvas._is_paused
+        self.btn_play_pause.setText("Reanudar" if self.demo_canvas._is_paused else "Pausar")
+
+    def _on_restart(self) -> None:
+        self.demo_canvas.restart_animation()
+        self.btn_play_pause.setText("Pausar")
+
+    def _cycle_speed(self) -> None:
+        cur = self.demo_canvas._speed_multiplier
+        nxt = 0.5 if cur == 1.0 else (1.5 if cur == 0.5 else 1.0)
+        self.demo_canvas._speed_multiplier = nxt
+        self.btn_speed.setText(f"Velocidad: {nxt}x")

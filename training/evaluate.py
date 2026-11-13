@@ -1,10 +1,9 @@
-"""Evaluación offline del clasificador HMM 2D (training/evaluate.py).
+"""Evaluación offline del clasificador HMM 2D y 3D (training/evaluate.py).
 
-Cumple los dos requisitos de evaluación aprobados:
+Cumple los dos requisitos de evaluación:
 1. Comparar K = 8 vs K = 16 (valores en config.features.K_compare).
 2. Medir accuracy (Top-1 y Top-3) sobre prefijos del trazo en tiempo real
-   (30 %, 50 %, 70 % y 100 % definidos en config.evaluation.prefix_fractions)
-   usando FeatureExtractor2D.extract_prefix(..., realtime=True).
+   (30 %, 60 % y 100 % definidos en config.evaluation.prefix_fractions).
 
 Ejecución:
     python -m training.evaluate
@@ -13,18 +12,13 @@ Ejecución:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 
 from core.config import get_config
 from core.FeatureExtractor import FeatureExtractor2D, FeatureExtractor3D
 from core.HMMEngine import HMMClassifier
-from training.augment import (
-    generate_seed_dataset_2d,
-    generate_seed_dataset_3d,
-    load_raw_samples,
-)
+from training.augment import load_dataset
 from training.train import train_letter_2d, train_letter_3d
 
 
@@ -42,21 +36,19 @@ class EvaluationReport:
 def _evaluate_k_mode(
     mode: str,
     K: int,
-    raw_dir: Path | None = None,
+    max_samples: int | None = 36,
     train_ratio: float = 0.75,
-    augment_factor: int = 1,
-    max_iter: int = 25,
+    augment_factor: int = 0,
+    max_iter: int = 20,
 ) -> EvaluationReport:
-    """Núcleo compartido para dividir muestras en train/test, entrenar con K y evaluar prefijos (2D o 3D)."""
+    """Divide las muestras en train/test, entrena con K y evalúa prefijos (2D o 3D)."""
     cfg = get_config()
     is_3d = mode == "3d"
     if is_3d:
-        generate_seed_dataset_3d(samples_per_letter=20, base_dir=raw_dir, only_if_empty=True)
         extractor: FeatureExtractor2D | FeatureExtractor3D = FeatureExtractor3D(K=K)
         train_fn = train_letter_3d
         seed_base = 700
     else:
-        generate_seed_dataset_2d(samples_per_letter=20, base_dir=raw_dir, only_if_empty=True)
         extractor = FeatureExtractor2D(K=K)
         train_fn = train_letter_2d
         seed_base = 500
@@ -65,7 +57,7 @@ def _evaluate_k_mode(
     test_set: dict[str, list[list[np.ndarray]]] = {}
 
     for idx, letter in enumerate(cfg.letters):
-        samples = load_raw_samples(letter, mode=mode, base_dir=raw_dir)
+        samples = load_dataset(letter, mode=mode, max_samples=max_samples)
         n_train = max(1, int(round(len(samples) * train_ratio)))
         train_samples = samples[:n_train]
         test_samples = samples[n_train:] if n_train < len(samples) else samples[-2:]
@@ -99,7 +91,10 @@ def _evaluate_k_mode(
                 res = extractor.extract_prefix(strokes, frac)
                 if len(res.symbols) == 0:
                     continue
-                ranking = classifier.classify(res.symbols)
+                is_complete = bool(np.isclose(frac, 1.0))
+                ranking = classifier.classify(
+                    res.symbols, shape=res.shape, complete=is_complete
+                )
                 pred_top1 = ranking[0][0]
                 pred_top3 = [r[0] for r in ranking[:3]]
 
@@ -109,7 +104,7 @@ def _evaluate_k_mode(
                 if letter in pred_top3:
                     top3_hits[frac] += 1
 
-                if np.isclose(frac, 1.0):
+                if is_complete:
                     confusion[letter_to_idx[letter], letter_to_idx[pred_top1]] += 1
                     per_letter_tot[letter] += 1
                     if pred_top1 == letter:
@@ -131,35 +126,35 @@ def _evaluate_k_mode(
 
 def evaluate_k_2d(
     K: int,
-    raw_dir: Path | None = None,
+    max_samples: int | None = 36,
     train_ratio: float = 0.75,
-    augment_factor: int = 1,
-    max_iter: int = 25,
+    augment_factor: int = 0,
+    max_iter: int = 20,
 ) -> EvaluationReport:
     """Divide las muestras por letra en train/test, entrena con K y evalúa prefijos en 2D."""
-    return _evaluate_k_mode("2d", K, raw_dir, train_ratio, augment_factor, max_iter)
+    return _evaluate_k_mode("2d", K, max_samples, train_ratio, augment_factor, max_iter)
 
 
 def evaluate_k_3d(
     K: int,
-    raw_dir: Path | None = None,
+    max_samples: int | None = 36,
     train_ratio: float = 0.75,
-    augment_factor: int = 1,
-    max_iter: int = 25,
+    augment_factor: int = 0,
+    max_iter: int = 20,
 ) -> EvaluationReport:
     """Divide las muestras 3D por letra en train/test, entrena con K y evalúa prefijos geodésicos."""
-    return _evaluate_k_mode("3d", K, raw_dir, train_ratio, augment_factor, max_iter)
+    return _evaluate_k_mode("3d", K, max_samples, train_ratio, augment_factor, max_iter)
 
 
 def compare_k_configs(
-    raw_dir: Path | None = None, mode: str = "2d", verbose: bool = True
+    max_samples: int | None = 36, mode: str = "2d", verbose: bool = True
 ) -> dict[int, EvaluationReport]:
     """Compara todos los valores de K en config.features.K_compare (8 vs 16)."""
     cfg = get_config()
     reports: dict[int, EvaluationReport] = {}
     eval_fn = evaluate_k_3d if mode == "3d" else evaluate_k_2d
     for K in cfg.features.K_compare:
-        rep = eval_fn(K=K, raw_dir=raw_dir)
+        rep = eval_fn(K=K, max_samples=max_samples)
         reports[K] = rep
 
     if verbose:
@@ -184,4 +179,3 @@ def compare_k_configs(
 if __name__ == "__main__":
     compare_k_configs(mode="2d", verbose=True)
     compare_k_configs(mode="3d", verbose=True)
-

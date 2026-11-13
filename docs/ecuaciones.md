@@ -1,6 +1,6 @@
 # Guía de Defensa Matemática en Tablero — Proyecto Final HMM 2D/3D
 
-Este documento contiene el desarrollo matemático completo y paso a paso de todas las ecuaciones programadas en [`core/HMMEngine.py`](../core/HMMEngine.py), [`core/topology.py`](../core/topology.py) y [`core/FeatureExtractor.py`](../core/FeatureExtractor.py), estructurado específicamente para la **sustentación oral en tablero** (SPEC §5.2).
+Este documento contiene el desarrollo matemático completo y paso a paso de todas las ecuaciones programadas en [`core/HMMEngine.py`](../core/HMMEngine.py) y [`core/FeatureExtractor.py`](../core/FeatureExtractor.py), estructurado específicamente para la **sustentación oral en tablero** (SPEC §5.2).
 
 ---
 
@@ -25,9 +25,9 @@ Para cada una de las 27 letras minúsculas del alfabeto español $c \in \mathcal
      $$b_j(k) = P(O_t = v_k \mid q_t = S_j), \qquad \sum_{k=0}^{M-1} b_j(k) = 1 \;\;\forall j$$
 
 ### 1.1 Restricción de Topología Bakis (Izquierda-Derecha)
-Dado que un carácter escrito evoluciona en el tiempo sin retroceder a fases iniciales, en [`core/topology.py`](../core/topology.py) se impone la topología **Bakis izquierda-derecha**:
+Dado que un carácter escrito evoluciona en el tiempo sin retroceder a fases iniciales, en [`core/HMMEngine.py`](../core/HMMEngine.py) se impone la topología **Bakis izquierda-derecha** con estado inicial fijo:
 $$\pi = [1, 0, 0, \dots, 0]^T, \qquad a_{ij} = 0 \quad \text{para todo } j < i \text{ o } j > i + 2$$
-Es decir, desde el estado $S_i$ solo se permite permanecer en $S_i$ ($j=i$), avanzar al siguiente estado ($j=i+1$) o saltar un estado ($j=i+2$).
+Es decir, el trazo siempre comienza en $S_0$ ($\pi_0 = 1$) y desde $S_i$ solo se permite permanecer en $S_i$ ($j=i$), avanzar al siguiente estado ($j=i+1$) o saltar un estado ($j=i+2$).
 
 ### 1.2 Inicialización por Alineación Segmentaria Uniforme
 Si todas las filas de $B$ se inicializan uniformes ($b_j(k) = 1/M$), Baum-Welch parte de un punto silla simétrico. Para romper la simetría (`init_segmental_bakis_hmm`), cada secuencia de entrenamiento $O^{(r)}$ de longitud $T_r$ se divide en $N$ segmentos uniformes asignando al instante $t \in \{0, \dots, T_r - 1\}$ el estado:
@@ -126,11 +126,14 @@ La variable forward clásica $\alpha_t(i) = P(O_1, \dots, O_t, q_t = S_i \mid \l
    Tomando logaritmo natural:
    $$\boxed{\log P(O \mid \lambda) = -\sum_{t=1}^{T} \log(c_t)}$$
 
-### 4.3 Clasificación Bayesiana Multiclase con Log-Sum-Exp (`HMMClassifier.classify`)
-Con prior uniforme $P(c) = 1/27$, la probabilidad a posteriori del carácter $c$ dada la secuencia parcial $O_{1:t}$ es:
-$$P(c \mid O_{1:t}) = \frac{P(O_{1:t} \mid \lambda_c)}{\sum_{c' \in \mathcal{C}} P(O_{1:t} \mid \lambda_{c'})} = \frac{\exp(L_c)}{\sum_{c' \in \mathcal{C}} \exp(L_{c'})}, \qquad L_c = \log P(O_{1:t} \mid \lambda_c)$$
-Para evitar underflow al exponenciar $L_c \ll 0$, se resta el máximo $m = \max_{c' \in \mathcal{C}} L_{c'}$ (**identidad Log-Sum-Exp**):
-$$\log \sum_{c'} \exp(L_{c'}) = m + \log\!\left(\sum_{c' \in \mathcal{C}} \exp(L_{c'} - m)\right), \qquad \boxed{P(c \mid O_{1:t}) = \exp\!\left(L_c - m - \log\sum_{c'} e^{L_{c'}-m}\right)}$$
+### 4.3 Clasificación Bayesiana Conjunta: Secuencia + Duración + Saltos + Morfología (`HMMClassifier.classify`)
+Para desambiguar letras que comparten giros angulares similares pero difieren en longitud, número de trazos o proporción geométrica (por ejemplo `a` vs `o`, `h` vs `n`, `v` vs `x`, `i` vs `l`, `a` vs `q`, `b` vs `p`), el puntaje logarítmico total $\text{Score}(c)$ de cada clase combina la log-verosimilitud Forward con las penalizaciones de duración $P_{\text{dur}}$, de saltos de pluma $P_{\text{jump}}$ y morfológica $P_{\text{shape}}$ sobre el descriptor geométrico global $\mathbf{g} = [\log(w/h),\, x'_{\text{ini}},\, y'_{\text{ini}},\, x'_{\text{fin}},\, y'_{\text{fin}},\, \bar{x},\, \bar{y}]^T \in \mathbb{R}^7$:
+$$\text{Score}(c) = \log P(O_{1:t} \mid \lambda_c) - P_{\text{dur}}(t;\, \mu_c, \sigma_c) - P_{\text{jump}}(J_{\text{obs}};\, J_c) - P_{\text{shape}}(\mathbf{g};\, \boldsymbol{\mu}_{\text{shape},c}, \boldsymbol{\sigma}_{\text{shape},c})$$
+donde:
+$$P_{\text{dur}}(t) = \frac{1}{2}\left(\frac{t - \mu_c}{\max(\sigma_c, 4)}\right)^2, \qquad P_{\text{shape}}(\mathbf{g}) = \frac{w_{\text{shape}}}{2} \sum_{d=1}^{7} \left(\frac{g_d - \mu_{\text{shape},c,d}}{\sigma_{\text{shape},c,d}}\right)^2$$
+y $P_{\text{jump}}(J_{\text{obs}}; J_c)$ penaliza la discrepancia entre el número de saltos con la pluma levantada observados $J_{\text{obs}}$ y el esperado por la clase $J_c$ (evitando que letras de 1 trazo como `l` o `v` se confundan con letras de 2 trazos como `i` o `x`). Además, las columnas direccionales $0 \dots K-1$ de $B$ incorporan un suavizado circular entre sectores vecinos ($\tilde{b}_j(k) = 0.78\,b_j(k) + 0.11\,b_j((k-1)\bmod K) + 0.11\,b_j((k+1)\bmod K)$), otorgando tolerancia angular natural de $\pm 22.5^\circ$ al pulso humano.
+Con prior uniforme $P(c) = 1/27$, la probabilidad a posteriori del carácter $c$ se obtiene mediante la **identidad Log-Sum-Exp** ($m = \max_{c' \in \mathcal{C}} \text{Score}(c')$):
+$$\boxed{P(c \mid O_{1:t}, \mathbf{g}) = \exp\!\left(\text{Score}(c) - m - \log\sum_{c' \in \mathcal{C}} e^{\text{Score}(c') - m}\right)}$$
 
 ---
 

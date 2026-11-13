@@ -1,10 +1,4 @@
-"""Ventana Modo 2D: Reconocedor y Visualizador en Plano Cartesiano (gui/View2D.py).
-
-Diseño limpio acorde a la Imagen 2:
-- Barra superior: 'Modo 2D' (título), 'Plano cartesiano' (subtítulo) y botones [Reiniciar captura], [Limpiar lienzo].
-- Lienzo central: tarjeta blanca redondeada con cruz central tenue, marca de agua 'Dibuja una letra aquí' y pie informativo.
-- Panel derecho: clasificación en tiempo real compacta con glifos de referencia.
-"""
+"""Ventana B — Modo 2D: Reconocedor y Visualizador en Plano Cartesiano (SPEC §2.2)."""
 
 from __future__ import annotations
 
@@ -12,7 +6,7 @@ from typing import Callable
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -35,11 +29,13 @@ class RecognizerCanvas2D(QFrame):
     def __init__(
         self,
         on_strokes_changed: Callable[[], None],
+        expected_size: float = 250.0,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("Canvas2DFrame")
         self.on_strokes_changed = on_strokes_changed
+        self.expected_size = float(expected_size)
 
         self.strokes: list[list[tuple[float, float]]] = []
         self._current_stroke: list[tuple[float, float]] | None = None
@@ -86,7 +82,6 @@ class RecognizerCanvas2D(QFrame):
         self.projected_strokes = projected
         self.update()
 
-    # --- Eventos de ratón -----------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
             pos = event.position()
@@ -112,7 +107,6 @@ class RecognizerCanvas2D(QFrame):
             self.on_strokes_changed()
             self.update()
 
-    # --- Renderizado ----------------------------------------------------------
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
         painter = QPainter(self)
@@ -120,27 +114,30 @@ class RecognizerCanvas2D(QFrame):
 
         w = float(self.width())
         h = float(self.height())
-        cx = w / 2.0
-        cy = h / 2.0
+        cx, cy = w / 2.0, h / 2.0
 
-        # Ejes centrales tenues (cruz en el centro del lienzo)
+        # Recuadro guía central (escala de referencia 250×250 px) y ejes tenues
+        half_box = min(self.expected_size / 2.0, min(w, h) * 0.42)
+        guide_rect = QRectF(cx - half_box, cy - half_box, 2.0 * half_box, 2.0 * half_box)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor("#e2e8f0"), 1.2, Qt.PenStyle.DashLine))
+        painter.drawRoundedRect(guide_rect, 10.0, 10.0)
+
         axis_pen = QPen(QColor("#f1f5f9"), 1.5, Qt.PenStyle.DashLine)
         painter.setPen(axis_pen)
         painter.drawLine(QPointF(20, cy), QPointF(w - 20, cy))
         painter.drawLine(QPointF(cx, 20), QPointF(cx, h - 20))
 
-        # Texto marca de agua cuando el lienzo está vacío
         has_strokes = any(len(s) > 0 for s in self.strokes)
         if not has_strokes:
             painter.setPen(QColor("#cbd5e1"))
-            font = QFont("Segoe UI", 16, QFont.Weight.Normal)
-            painter.setFont(font)
-            rect = QRectF(0, 0, w, h)
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Dibuja una letra aquí")
+            painter.setFont(QFont("Segoe UI", 16, QFont.Weight.Normal))
+            painter.drawText(QRectF(0, 0, w, h), Qt.AlignmentFlag.AlignCenter, "Dibuja una letra aquí")
             return
 
         # 1. Proyección dinámica futura (verde punteado)
         if self.show_projection and self.projected_strokes:
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             proj_pen = QPen(QColor(22, 163, 74, 210), 3.0, Qt.PenStyle.DashLine)
             proj_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             proj_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -170,7 +167,8 @@ class RecognizerCanvas2D(QFrame):
             painter.setBrush(QColor(22, 163, 74, 210))
             painter.drawEllipse(QPointF(float(last_proj[0]), float(last_proj[1])), 4.0, 4.0)
 
-        # 2. Trazos realizados por el usuario (azul oscuro nítido)
+        # 2. Trazos realizados por el usuario (sin relleno de brocha)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         user_pen = QPen(QColor("#1e293b"), 3.8, Qt.PenStyle.SolidLine)
         user_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         user_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -180,7 +178,9 @@ class RecognizerCanvas2D(QFrame):
             if not stroke:
                 continue
             if len(stroke) == 1:
+                painter.setBrush(QColor("#1e293b"))
                 painter.drawEllipse(QPointF(*stroke[0]), 3.2, 3.2)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
             else:
                 path = QPainterPath(QPointF(*stroke[0]))
                 for x, y in stroke[1:]:
@@ -214,13 +214,11 @@ class View2D(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Columna principal izquierda: cabecera + lienzo + pie
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(28, 24, 24, 24)
         left_layout.setSpacing(14)
 
-        # Barra superior: Título a la izquierda, botones a la derecha
         top_bar = QHBoxLayout()
         header_v = QVBoxLayout()
         header_v.setSpacing(2)
@@ -233,7 +231,6 @@ class View2D(QWidget):
         header_v.addWidget(lbl_sub)
         top_bar.addLayout(header_v, stretch=1)
 
-        # Botones de acción en la esquina superior derecha
         self.btn_restart = QPushButton("Reiniciar captura")
         self.btn_restart.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_restart.setStyleSheet(self._button_style())
@@ -248,36 +245,26 @@ class View2D(QWidget):
         top_bar.addWidget(self.btn_clear)
         left_layout.addLayout(top_bar)
 
-        # Lienzo de dibujo central
-        self.canvas = RecognizerCanvas2D(on_strokes_changed=self._evaluate_realtime)
+        self.canvas = RecognizerCanvas2D(
+            on_strokes_changed=self._evaluate_realtime,
+            expected_size=float(self.cfg.features.expected_letter_size),
+        )
         left_layout.addWidget(self.canvas, stretch=1)
 
-        # Pie inferior
         lbl_footer = QLabel("Mantén presionado el clic izquierdo para trazar.")
         lbl_footer.setStyleSheet("font-size: 12px; color: #64748b;")
         left_layout.addWidget(lbl_footer)
 
         root.addWidget(left_widget, stretch=1)
 
-        # Panel lateral derecho de ranking
         self.ranking_panel = RankingPanel(self)
         root.addWidget(self.ranking_panel)
 
     def _button_style(self) -> str:
         return (
-            "QPushButton { "
-            "background-color: #ffffff; "
-            "border: 1px solid #cbd5e1; "
-            "border-radius: 6px; "
-            "padding: 7px 14px; "
-            "font-size: 12px; "
-            "font-weight: 500; "
-            "color: #334155; "
-            "} "
-            "QPushButton:hover { "
-            "background-color: #f1f5f9; "
-            "border-color: #94a3b8; "
-            "}"
+            "QPushButton { background-color: #ffffff; border: 1px solid #cbd5e1; "
+            "border-radius: 6px; padding: 7px 14px; font-size: 12px; font-weight: 500; color: #334155; } "
+            "QPushButton:hover { background-color: #f1f5f9; border-color: #94a3b8; }"
         )
 
     def reset_capture(self) -> None:
@@ -293,7 +280,12 @@ class View2D(QWidget):
             self.canvas.set_projected_strokes([])
             return
 
-        res = self.extractor.extract(raw_strokes, realtime=True)
+        is_complete = self.canvas._current_stroke is None
+        all_pts = np.vstack(raw_strokes)
+        span = float(max(np.ptp(all_pts[:, 0]), np.ptp(all_pts[:, 1])))
+        use_realtime = (not is_complete) or (span < 35.0)
+
+        res = self.extractor.extract(raw_strokes, realtime=use_realtime)
         symbols = res.symbols.tolist()
         if not symbols:
             self.ranking_panel.reset()
@@ -301,14 +293,22 @@ class View2D(QWidget):
             return
 
         ranking, top_letter, current_state, future_symbols = self.classifier.predict_and_project(
-            symbols, max_symbols=45
+            symbols,
+            max_symbols=45,
+            shape=res.shape,
+            complete=is_complete,
         )
         if not ranking:
             self.ranking_panel.reset()
             self.canvas.set_projected_strokes([])
             return
 
-        # Autocompletado proyectado futuro
+        # Si el trazo ya se completó y alcanzó el estado final del modelo ganador, acotar cola proyectada
+        if is_complete and top_letter and current_state is not None:
+            top_model = self.classifier.models[top_letter]
+            if current_state >= top_model.n_states - 1 and len(symbols) >= 0.75 * top_model.expected_length:
+                future_symbols = future_symbols[:1]
+
         if self.canvas.show_projection and future_symbols:
             projected = self.extractor.reconstruct_projected_strokes(res, future_symbols)
             self.canvas.set_projected_strokes(projected)

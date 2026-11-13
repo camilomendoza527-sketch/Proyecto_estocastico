@@ -1,10 +1,9 @@
 """Punto de entrada principal de la aplicación de escritorio HMM 2D/3D (main.py).
 
-Arquitectura de navegación moderna con barra lateral izquierda:
-- Inicio (Menú de bienvenida)
-- Modo 2D (Plano cartesiano)
-- Modo 3D (Superficie esférica)
-- Guía de letras (Trazos canónicos, animación caligráfica y selector de 27 letras)
+Estructura en tres vistas principales según SPEC §2.1–2.3:
+- Ventana A: Menú Principal de Inicio (gui/MainMenu.py)
+- Ventana B: Reconocedor y Visualizador 2D (gui/View2D.py)
+- Ventana C: Reconocedor y Visualizador 3D (gui/View3D.py)
 """
 
 from __future__ import annotations
@@ -13,7 +12,6 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -49,26 +47,25 @@ class HMMRecognizerApp(QMainWindow):
         self.cfg = get_config()
         mdir = models_dir if models_dir is not None else PROJECT_ROOT / "models"
 
-        # Carga de modelos pre-entrenados
         self.classifier_2d = HMMClassifier.load_from_dir(mdir, pattern="2d_*.json")
         self.classifier_3d = HMMClassifier.load_from_dir(mdir, pattern="3d_*.json")
-
         self.extractor_2d = FeatureExtractor2D()
         self.extractor_3d = FeatureExtractor3D()
 
         self.setWindowTitle("Reconocedor HMM — Procesos Estocásticos")
         self.resize(1180, 750)
         self.setMinimumSize(960, 640)
-        self.setStyleSheet("QMainWindow { background-color: #f8fafc; font-family: 'Segoe UI', sans-serif; }")
+        self.setStyleSheet(
+            "QMainWindow { background-color: #f8fafc; font-family: 'Segoe UI', sans-serif; }"
+        )
 
-        # Widget central con división horizontal: Sidebar | Contenido
         central_widget = QWidget()
         central_layout = QHBoxLayout(central_widget)
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
         self.setCentralWidget(central_widget)
 
-        # --- 1. Barra lateral izquierda (Sidebar) -----------------------------
+        # 1. Barra lateral izquierda
         sidebar = QFrame()
         sidebar.setFixedWidth(205)
         sidebar.setStyleSheet(
@@ -78,101 +75,70 @@ class HMMRecognizerApp(QMainWindow):
         side_layout.setContentsMargins(16, 24, 16, 20)
         side_layout.setSpacing(6)
 
-        # Encabezado institucional
         lbl_app = QLabel("Reconocedor HMM")
-        lbl_app.setStyleSheet("font-size: 15px; font-weight: 700; color: #0f172a; background: transparent; border: none;")
+        lbl_app.setStyleSheet(
+            "font-size: 15px; font-weight: 700; color: #0f172a; background: transparent; border: none;"
+        )
         lbl_sub = QLabel("Procesos Estocásticos")
-        lbl_sub.setStyleSheet("font-size: 11px; color: #64748b; background: transparent; border: none; margin-bottom: 16px;")
+        lbl_sub.setStyleSheet(
+            "font-size: 11px; color: #64748b; background: transparent; border: none; margin-bottom: 16px;"
+        )
         side_layout.addWidget(lbl_app)
         side_layout.addWidget(lbl_sub)
-
-        # Botones de navegación
-        self.nav_buttons: list[QPushButton] = []
 
         self.btn_inicio = QPushButton("Inicio")
         self.btn_2d = QPushButton("Modo 2D")
         self.btn_3d = QPushButton("Modo 3D")
         self.btn_guia = QPushButton("Guía de letras")
 
-        self.btn_inicio.clicked.connect(lambda: self.navigate_to(self.IDX_INICIO))
-        self.btn_2d.clicked.connect(lambda: self.navigate_to(self.IDX_2D))
-        self.btn_3d.clicked.connect(lambda: self.navigate_to(self.IDX_3D))
-        self.btn_guia.clicked.connect(lambda: self.navigate_to(self.IDX_GUIA))
+        self.btn_inicio.clicked.connect(self.show_menu)
+        self.btn_2d.clicked.connect(self.show_2d)
+        self.btn_3d.clicked.connect(self.show_3d)
+        self.btn_guia.clicked.connect(self.show_guia)
 
-        for btn in (self.btn_inicio, self.btn_2d, self.btn_3d, self.btn_guia):
+        self.nav_buttons = [self.btn_inicio, self.btn_2d, self.btn_3d, self.btn_guia]
+        for btn in self.nav_buttons:
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setFixedHeight(38)
             side_layout.addWidget(btn)
-            self.nav_buttons.append(btn)
 
         side_layout.addStretch(1)
-
-        # Pie de página institucional en la barra lateral
         lbl_footer = QLabel("Universidad de los Llanos")
-        lbl_footer.setStyleSheet("font-size: 10px; color: #94a3b8; background: transparent; border: none;")
+        lbl_footer.setStyleSheet(
+            "font-size: 10px; color: #94a3b8; background: transparent; border: none;"
+        )
         side_layout.addWidget(lbl_footer)
-
         central_layout.addWidget(sidebar)
 
-        # --- 2. Área principal de contenido (QStackedWidget) ------------------
+        # 2. Vistas principales (Ventanas A, B y C)
         self.stack = QStackedWidget()
         self.stack.setStyleSheet("QStackedWidget { background-color: #ffffff; }")
         central_layout.addWidget(self.stack, stretch=1)
 
-        # Inicialización de las vistas
-        self.view_inicio = MainMenu(
-            on_select_2d=lambda: self.navigate_to(self.IDX_2D),
-            on_select_3d=lambda: self.navigate_to(self.IDX_3D),
-        )
-        self.view_2d = View2D(
-            classifier=self.classifier_2d,
-            extractor=self.extractor_2d,
-        )
-        self.view_3d = View3D(
-            classifier=self.classifier_3d,
-            extractor=self.extractor_3d,
-        )
+        self.view_inicio = MainMenu(on_select_2d=self.show_2d, on_select_3d=self.show_3d)
+        self.view_2d = View2D(classifier=self.classifier_2d, extractor=self.extractor_2d)
+        self.view_3d = View3D(classifier=self.classifier_3d, extractor=self.extractor_3d)
         self.view_guia = LetterGuideView()
 
-        self.stack.addWidget(self.view_inicio)  # 0
-        self.stack.addWidget(self.view_2d)      # 1
-        self.stack.addWidget(self.view_3d)      # 2
-        self.stack.addWidget(self.view_guia)    # 3
-
+        self.stack.addWidget(self.view_inicio)
+        self.stack.addWidget(self.view_2d)
+        self.stack.addWidget(self.view_3d)
+        self.stack.addWidget(self.view_guia)
         self.navigate_to(self.IDX_INICIO)
 
     def navigate_to(self, index: int) -> None:
-        """Cambia la vista activa y actualiza el estilo de los botones de la barra lateral."""
         self.stack.setCurrentIndex(index)
         for i, btn in enumerate(self.nav_buttons):
             if i == index:
                 btn.setStyleSheet(
-                    "QPushButton { "
-                    "background-color: #dcfce7; "
-                    "color: #166534; "
-                    "font-size: 13px; "
-                    "font-weight: 600; "
-                    "border: none; "
-                    "border-radius: 6px; "
-                    "text-align: left; "
-                    "padding-left: 12px; "
-                    "}"
+                    "QPushButton { background-color: #dcfce7; color: #166534; font-size: 13px; "
+                    "font-weight: 600; border: none; border-radius: 6px; text-align: left; padding-left: 12px; }"
                 )
             else:
                 btn.setStyleSheet(
-                    "QPushButton { "
-                    "background-color: transparent; "
-                    "color: #334155; "
-                    "font-size: 13px; "
-                    "font-weight: 500; "
-                    "border: none; "
-                    "border-radius: 6px; "
-                    "text-align: left; "
-                    "padding-left: 12px; "
-                    "} "
-                    "QPushButton:hover { "
-                    "background-color: #f1f5f9; "
-                    "}"
+                    "QPushButton { background-color: transparent; color: #334155; font-size: 13px; "
+                    "font-weight: 500; border: none; border-radius: 6px; text-align: left; padding-left: 12px; } "
+                    "QPushButton:hover { background-color: #f1f5f9; }"
                 )
 
     def show_menu(self) -> None:
