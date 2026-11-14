@@ -173,8 +173,9 @@ class RankingPanel(QFrame):
         root_layout.setContentsMargins(14, 16, 14, 16)
         root_layout.setSpacing(8)
 
-        # Encabezado minimalista: "Esperando trazo" o "Reconociendo: 17.1%"
+        # Encabezado minimalista: "Esperando trazo", "Reconociendo: XX.X%" o rechazo OOD
         self.lbl_top_val = QLabel("Esperando trazo")
+        self.lbl_top_val.setWordWrap(True)
         self.lbl_top_val.setStyleSheet("font-size: 14px; font-weight: 700; color: #1e293b; padding-left: 4px;")
         root_layout.addWidget(self.lbl_top_val)
 
@@ -250,8 +251,8 @@ class RankingPanel(QFrame):
         viterbi_state: int | None = None,
         n_obs: int = 0,
     ) -> None:
-        """Actualiza las probabilidades y reordena la vista mostrando el ganador."""
-        if not ranking:
+        """Actualiza las probabilidades estadísticas y reordena las 27 letras."""
+        if not ranking or n_obs <= 0:
             self.reset()
             return
 
@@ -259,14 +260,11 @@ class RankingPanel(QFrame):
         top_prob = float(ranking[0][1])
         pct = top_prob * 100.0
 
-        if n_obs > 0 and top_prob > 0.05:
-            self.lbl_top_char.setText(top_char)
-            self.lbl_top_val.setText(f"Reconociendo: {pct:.1f}%")
-            self.lbl_top_val.setStyleSheet("font-size: 14px; font-weight: 700; color: #0f766e; padding-left: 4px;")
-        else:
-            self.lbl_top_char.setText("—")
-            self.lbl_top_val.setText("Esperando trazo")
-            self.lbl_top_val.setStyleSheet("font-size: 14px; font-weight: 700; color: #1e293b; padding-left: 4px;")
+        self.lbl_top_char.setText(top_char)
+        self.lbl_top_val.setText(f"Reconociendo: {pct:.1f}%")
+        self.lbl_top_val.setStyleSheet(
+            "font-size: 14px; font-weight: 700; color: #0f766e; padding-left: 4px;"
+        )
 
         # Reordenar las filas en el layout según el ranking (desactivar repintados intermedios)
         self.setUpdatesEnabled(False)
@@ -279,8 +277,7 @@ class RankingPanel(QFrame):
                     val = int(round(prob * 1000))
                     row.bar.setValue(val)
                     row.lbl_pct.setText(f"{prob * 100.0:4.1f}%")
-                    is_top = (rank_idx == 0 and n_obs > 0 and prob > 0.05)
-                    row.set_highlight(is_top)
+                    row.set_highlight(rank_idx == 0)
                     self.rows_layout.insertWidget(rank_idx, row)
         finally:
             self.setUpdatesEnabled(True)

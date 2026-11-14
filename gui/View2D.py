@@ -75,6 +75,20 @@ class RecognizerCanvas2D(QFrame):
         self.update()
         self.on_strokes_changed()
 
+    def undo_last_stroke(self) -> None:
+        """Elimina el último sub-trazo (en curso o finalizado) y reevalúa."""
+        if not self.strokes and self._current_stroke is None:
+            return
+        if self._current_stroke is not None:
+            if self.strokes and self.strokes[-1] is self._current_stroke:
+                self.strokes.pop()
+            self._current_stroke = None
+        else:
+            self.strokes.pop()
+        self.projected_strokes.clear()
+        self.update()
+        self.on_strokes_changed()
+
     def get_numpy_strokes(self) -> list[np.ndarray]:
         return [np.asarray(s, dtype=float) for s in self.strokes if len(s) > 0]
 
@@ -231,17 +245,17 @@ class View2D(QWidget):
         header_v.addWidget(lbl_sub)
         top_bar.addLayout(header_v, stretch=1)
 
-        self.btn_restart = QPushButton("Reiniciar captura")
-        self.btn_restart.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_restart.setStyleSheet(self._button_style())
-        self.btn_restart.clicked.connect(self.reset_capture)
+        self.btn_undo = QPushButton("Deshacer trazo")
+        self.btn_undo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_undo.setStyleSheet(self._button_style())
+        self.btn_undo.clicked.connect(self.undo_last_stroke)
 
         self.btn_clear = QPushButton("Limpiar lienzo")
         self.btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_clear.setStyleSheet(self._button_style())
         self.btn_clear.clicked.connect(self.reset_capture)
 
-        top_bar.addWidget(self.btn_restart)
+        top_bar.addWidget(self.btn_undo)
         top_bar.addWidget(self.btn_clear)
         left_layout.addLayout(top_bar)
 
@@ -251,14 +265,16 @@ class View2D(QWidget):
         )
         left_layout.addWidget(self.canvas, stretch=1)
 
-        lbl_footer = QLabel("Mantén presionado el clic izquierdo para trazar.")
-        lbl_footer.setStyleSheet("font-size: 12px; color: #64748b;")
-        left_layout.addWidget(lbl_footer)
+        self.lbl_obs = QLabel(self._IDLE_OBS_TEXT)
+        self.lbl_obs.setStyleSheet("font-size: 11px; color: #475569; font-family: Consolas, monospace;")
+        left_layout.addWidget(self.lbl_obs)
 
         root.addWidget(left_widget, stretch=1)
 
         self.ranking_panel = RankingPanel(self)
         root.addWidget(self.ranking_panel)
+
+    _IDLE_OBS_TEXT = "Lienzo 2D listo (T = 0). Mantén presionado el clic izquierdo para trazar."
 
     def _button_style(self) -> str:
         return (
@@ -267,17 +283,37 @@ class View2D(QWidget):
             "QPushButton:hover { background-color: #f1f5f9; border-color: #94a3b8; }"
         )
 
+    def _clear_prediction_view(
+        self, n_strokes: int = 0, last_pos: tuple[float, float] | None = None
+    ) -> None:
+        self.ranking_panel.reset()
+        self.canvas.set_projected_strokes([])
+        if n_strokes <= 0 or last_pos is None:
+            self.lbl_obs.setText(self._IDLE_OBS_TEXT)
+        else:
+            lx, ly = last_pos
+            self.lbl_obs.setText(
+                f"(x={lx:.0f}, y={ly:.0f}) | Sub-trazos: {n_strokes} | T = 0"
+            )
+
+    def undo_last_stroke(self) -> None:
+        """Elimina el último sub-trazo y actualiza el ranking en tiempo real."""
+        self.canvas.undo_last_stroke()
+
     def reset_capture(self) -> None:
         """Reinicia el lienzo y el panel de ranking."""
         self.canvas.clear_strokes()
-        self.ranking_panel.reset()
+        self._clear_prediction_view()
 
     def _evaluate_realtime(self) -> None:
         """Ejecuta la extracción de características y clasificador HMM en tiempo real."""
         raw_strokes = self.canvas.get_numpy_strokes()
-        if not raw_strokes or all(len(s) < 2 for s in raw_strokes):
-            self.ranking_panel.reset()
-            self.canvas.set_projected_strokes([])
+        if not raw_strokes:
+            self._clear_prediction_view()
+            return
+        last_pt = (float(raw_strokes[-1][-1][0]), float(raw_strokes[-1][-1][1]))
+        if all(len(s) < 2 for s in raw_strokes):
+            self._clear_prediction_view(len(raw_strokes), last_pt)
             return
 
         is_complete = self.canvas._current_stroke is None
@@ -288,8 +324,7 @@ class View2D(QWidget):
         res = self.extractor.extract(raw_strokes, realtime=use_realtime)
         symbols = res.symbols.tolist()
         if not symbols:
-            self.ranking_panel.reset()
-            self.canvas.set_projected_strokes([])
+            self._clear_prediction_view(len(raw_strokes), last_pt)
             return
 
         ranking, top_letter, current_state, future_symbols = self.classifier.predict_and_project(
@@ -299,8 +334,7 @@ class View2D(QWidget):
             complete=is_complete,
         )
         if not ranking:
-            self.ranking_panel.reset()
-            self.canvas.set_projected_strokes([])
+            self._clear_prediction_view()
             return
 
         # Si el trazo ya se completó y alcanzó el estado final del modelo ganador, acotar cola proyectada
@@ -314,6 +348,19 @@ class View2D(QWidget):
             self.canvas.set_projected_strokes(projected)
         else:
             self.canvas.set_projected_strokes([])
+
+        lx, ly = last_pt
+        k_dir = self.extractor.cfg.K
+        sym_tail = " ".join(
+            f"J{s - k_dir}" if self.extractor.is_jump(s) else f"d{s}"
+            for s in symbols[-5:]
+        )
+        if len(symbols) > 5:
+            sym_tail = "... " + sym_tail
+        self.lbl_obs.setText(
+            f"(x={lx:.0f}, y={ly:.0f}) | Sub-trazos: {len(raw_strokes)} | T = {len(symbols)} | "
+            f"Proyección '{top_letter or '-'}': {len(future_symbols)} pasos | {sym_tail}"
+        )
 
         self.ranking_panel.update_probabilities(
             ranking=ranking,

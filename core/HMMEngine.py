@@ -73,12 +73,23 @@ class HMM:
         if not np.isclose(self.pi.sum(), 1.0, atol=1e-5):
             raise ValueError(f"El vector pi debe sumar 1: {self.pi.sum()}")
 
+    HUBER_Z_THRESHOLD: float = 4.0
+
+    @classmethod
+    def _huber_quad(cls, z: float) -> float:
+        """Cuadrática para |z| <= δ y continuación lineal C¹ para evitar dominio O(T²)."""
+        az = abs(z)
+        delta = cls.HUBER_Z_THRESHOLD
+        if az <= delta:
+            return 0.5 * (z * z)
+        return 0.5 * (delta * (2.0 * az - delta))
+
     def length_deviation_penalty(self, n_obs: int, complete: bool = False) -> float:
         """Penalización estocástica de duración según longitud de arco observada T.
 
-        Ecuación:
+        Ecuación (Huberizada más allá de |z| > 4 para evitar explosión cuadrática O(T²)):
         - En trazo finalizado (complete=True):
-            P_dur(T) = 0.5 · ((T - μ_c) / max(σ_c, 4.0))²
+            P_dur(T) = h_4((T - μ_c) / max(σ_c, 4.0))
         - En trazo parcial en curso (complete=False):
             Solo penaliza si T > μ_c + 1.5·σ_c para no castigar prefijos cortos.
         """
@@ -87,12 +98,12 @@ class HMM:
         sigma = max(self.length_std, 4.0)
         if complete:
             z = (float(n_obs) - self.expected_length) / sigma
-            return 0.5 * (z * z)
+            return self._huber_quad(z)
         threshold = self.expected_length + 1.5 * sigma
         if n_obs <= threshold:
             return 0.0
         z = (float(n_obs) - threshold) / sigma
-        return 0.5 * (z * z)
+        return self._huber_quad(z)
 
     def shape_penalty(
         self, shape: np.ndarray | None, n_obs: int, complete: bool = False
@@ -493,7 +504,11 @@ def init_segmental_bakis_hmm(
 # 8. CLASIFICADOR MULTICLASE (27 MODELOS)
 # =============================================================================
 class HMMClassifier:
-    """Clasificador multiclase de 27 modelos HMM {λ_c}."""
+    """Clasificador multiclase de 27 modelos HMM {λ_c} con normalización por longitud."""
+
+    TEMP_LIVE_DIVISOR: float = 18.0
+    TEMP_FINAL_PER_STEP: float = 0.25
+    FINAL_FIT_REF_NATS: float = 1.8
 
     def __init__(self, models: dict[str, HMM] | None = None) -> None:
         self.models: dict[str, HMM] = models if models is not None else {}
@@ -507,7 +522,15 @@ class HMMClassifier:
         shape: np.ndarray | None = None,
         complete: bool = False,
     ) -> list[tuple[str, float, float]]:
-        """Calcula probabilidades a posteriori P(c | O) integrando Forward, duración y forma."""
+        """Calcula probabilidades a posteriori P(c | O) normalizadas por longitud y ajuste global.
+
+        Conserva intacto el score discriminativo bruto Score(c) y su argmax sobre C:
+        - En trazo parcial (complete=False): τ_eff = max(1.0, T / 18.0) para mostrar la
+          fluctuación estadística entre letras candidatas mientras se dibuja.
+        - Al completar el trazo (complete=True): τ_eff = max(1.0, 0.25 · T) · max(1.0, (-S*/T) / 1.8),
+          normalizando por longitud y atenuando proporcionalmente cuando ni siquiera la mejor clase
+          ajusta al trazo (garabatos extremos), evitando saturar artificialmente al 100%.
+        """
         if not self.models or len(observations) == 0:
             return [
                 (letter, 1.0 / max(1, len(self.models)), float("-inf"))
@@ -528,14 +551,22 @@ class HMMClassifier:
             uniform = 1.0 / len(self.models)
             return [(letter, uniform, float("-inf")) for letter in sorted(self.models.keys())]
 
-        sum_exp = sum(np.exp(lp - max_log) for lp in log_likes.values())
-        log_denom = max_log + float(np.log(sum_exp))
+        if complete:
+            fit_scale = max(1.0, (-max_log / float(n_obs)) / self.FINAL_FIT_REF_NATS)
+            tau = max(1.0, self.TEMP_FINAL_PER_STEP * float(n_obs)) * fit_scale
+        else:
+            tau = max(1.0, float(n_obs) / self.TEMP_LIVE_DIVISOR)
+
+        scaled = {letter: lp / tau for letter, lp in log_likes.items()}
+        max_scaled = max(scaled.values())
+        sum_exp = sum(np.exp(v - max_scaled) for v in scaled.values())
+        log_denom = max_scaled + float(np.log(sum_exp))
 
         results = [
-            (letter, float(np.exp(log_p - log_denom)), log_p)
+            (letter, float(np.exp(scaled[letter] - log_denom)), log_p)
             for letter, log_p in log_likes.items()
         ]
-        results.sort(key=lambda item: item[1], reverse=True)
+        results.sort(key=lambda item: (item[1], item[2]), reverse=True)
         return results
 
     def predict_and_project(

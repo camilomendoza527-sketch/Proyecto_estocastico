@@ -129,3 +129,60 @@ def test_length_and_shape_penalties_disambiguate_letters():
     shape_a = np.array([0.0, 0.7, 0.3, 0.9, 0.9, 0.5, 0.5])
     res_a = dict((c, p) for c, p, _ in clf.classify(obs, shape=shape_a, complete=True))
     assert res_a["a"] > 0.95
+
+
+def test_length_normalized_calibration_avoids_saturation_and_preserves_argmax():
+    pi = np.array([1.0, 0.0])
+    A = np.array([[0.8, 0.2], [0.0, 1.0]])
+    hmm_a = HMM(letter="a", n_states=2, n_symbols=3, A=A, B=np.array([[0.72, 0.18, 0.10], [0.72, 0.18, 0.10]]), pi=pi)
+    hmm_b = HMM(letter="b", n_states=2, n_symbols=3, A=A, B=np.array([[0.65, 0.20, 0.15], [0.65, 0.20, 0.15]]), pi=pi)
+    clf = HMMClassifier({"a": hmm_a, "b": hmm_b})
+
+    obs = [0] * 40  # Diferencia acumulada grande en log-verosimilitud (sin normalizar daría ~98.4%), moderada por paso
+
+    for complete in (False, True):
+        res = clf.classify(obs, complete=complete)
+        assert res[0][0] == "a"
+        assert pytest.approx(sum(r[1] for r in res)) == 1.0
+        # Normalizado por T: nunca colapsa a ~100.0% / 0.0% ante diferencia moderada por símbolo
+        assert 0.55 < res[0][1] < 0.90
+        assert res[1][1] > 0.10
+
+
+def test_huberized_length_penalty_is_c1_and_linear_beyond_4sigma():
+    pi = np.array([1.0, 0.0])
+    A = np.array([[0.7, 0.3], [0.0, 1.0]])
+    B = np.array([[0.8, 0.2], [0.2, 0.8]])
+    hmm = HMM(letter="t", n_states=2, n_symbols=2, A=A, B=B, pi=pi, expected_length=40.0, length_std=10.0)
+
+    assert hmm.length_deviation_penalty(40, complete=True) == pytest.approx(0.0)
+    assert hmm.length_deviation_penalty(60, complete=True) == pytest.approx(2.0)  # z = 2 <= 4 -> 0.5*z^2
+    assert hmm.length_deviation_penalty(80, complete=True) == pytest.approx(8.0)  # z = 4 exacta frontera
+    # Más allá de 4 sigma (z = 10 -> T = 140) crece linealmente: 0.5 * 4 * (2*10 - 4) = 32.0 (en vez de 50.0)
+    assert hmm.length_deviation_penalty(140, complete=True) == pytest.approx(32.0)
+    # Suavidad C^1 en la frontera z = 4 (pendiente = 4 / sigma = 0.4 por observación)
+    slope_left = hmm.length_deviation_penalty(80, complete=True) - hmm.length_deviation_penalty(79, complete=True)
+    slope_right = hmm.length_deviation_penalty(81, complete=True) - hmm.length_deviation_penalty(80, complete=True)
+    assert abs(slope_right - slope_left) < 0.02
+
+
+def test_extreme_long_scribble_does_not_saturate_to_100_percent():
+    from pathlib import Path
+    from core.FeatureExtractor import FeatureExtractor2D
+
+    models_dir = Path(__file__).resolve().parent.parent / "models"
+    clf = HMMClassifier.load_from_dir(models_dir, "2d_*.json")
+    fe = FeatureExtractor2D()
+
+    t = np.linspace(0.0, 24.0 * np.pi, 750)
+    scribble = [np.column_stack([300.0 + 210.0 * np.cos(t) * np.sin(0.37 * t), 300.0 + 210.0 * np.sin(1.31 * t)])]
+    res = fe.extract(scribble, realtime=False)
+    assert len(res.symbols) > 200
+
+    ranking = clf.classify(res.symbols, shape=res.shape, complete=True)
+    assert sum(p for _, p, _ in ranking) == pytest.approx(1.0, abs=1e-6)
+    # Incluso en un garabato muy largo y denso no debe colapsar a 99-100%
+    assert ranking[0][1] < 0.85
+    # El ganador por probabilidad coincide con el mejor Score bruto
+    best_raw = max(ranking, key=lambda r: r[2])[0]
+    assert ranking[0][0] == best_raw

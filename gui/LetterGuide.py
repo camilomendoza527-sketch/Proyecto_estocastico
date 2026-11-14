@@ -310,10 +310,15 @@ class LetterGuideView(QWidget):
         n_st = len(self.demo_canvas._strokes)
         if n_st == 1:
             desc = f"Letra {letter} — 1 trazo continuo: Inicia en el círculo 1 (verde) y sigue las flechas sin levantar el ratón."
+        elif n_st == 2:
+            desc = (
+                f"Letra {letter} — 2 sub-trazos: 1) Inicia en 1 (verde). "
+                "2) Levanta y completa desde 2 (naranja)."
+            )
         else:
             desc = (
-                f"Letra {letter} — {n_st} sub-trazos: 1) Traza primero desde el círculo 1 (verde). "
-                "2) Levanta el ratón y completa el segundo trazo desde el círculo 2 (naranja)."
+                f"Letra {letter} — {n_st} sub-trazos: 1) Inicia en 1 (verde). "
+                "2) Continúa en 2 (naranja). 3) Completa desde 3 (morado)."
             )
         self.lbl_info.setText(desc + " Puedes dibujar encima para practicar.")
 

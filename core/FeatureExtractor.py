@@ -542,7 +542,7 @@ class FeatureExtractor3D(FeatureExtractor):
         """Reconstruye curvas geodésicas 3D proyectadas en coordenadas del mundo (SPEC §3.5)."""
         if not result.strokes or len(future_symbols) == 0 or len(result.strokes[-1]) == 0:
             return []
-        step_rad = max(float(result.geodesic_step), 0.02)
+        step_rad = max(float(result.geodesic_step), 0.005)
         curr = result.strokes[-1][-1].astype(float).copy()
         cam_strokes: list[list[np.ndarray]] = [[curr.copy()]]
 

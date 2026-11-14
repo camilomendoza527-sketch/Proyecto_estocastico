@@ -75,7 +75,7 @@ def _build_guide_frame_curves(
     extractor: FeatureExtractor3D,
     camera_rotation: tuple[float, float],
     radius: float,
-    half_span_deg: float = 48.0,
+    half_span_deg: float = 30.0,
 ) -> list[np.ndarray]:
     """Construye las curvas 3D del recuadro guía ecuatorial centrado en la vista de cámara."""
     R_inv = extractor.build_camera_matrix(camera_rotation).T
@@ -182,7 +182,7 @@ class SphereCanvas3D(gl.GLViewWidget):
         curves = _build_guide_frame_curves(self.extractor, cam_orient, self.radius)
         for idx, curve in enumerate(curves):
             is_border = idx < 4
-            color = (0.25, 0.42, 0.68, 0.85) if is_border else (0.45, 0.55, 0.68, 0.45)
+            color = (0.94, 0.45, 0.05, 0.88) if is_border else (0.94, 0.55, 0.18, 0.42)
             line = gl.GLLinePlotItem(
                 pos=curve, color=color, width=2.0 if is_border else 1.0, antialias=True
             )
@@ -249,13 +249,13 @@ class SphereCanvas3D(gl.GLViewWidget):
             dense = _densify_spherical(raw_pts, radius=r_lift)
             if len(dense) == 1:
                 dot = gl.GLScatterPlotItem(
-                    pos=dense, color=(0.09, 0.27, 0.78, 1.0), size=5.5, pxMode=True
+                    pos=dense, color=(0.95, 0.44, 0.04, 1.0), size=5.5, pxMode=True
                 )
                 self.addItem(dot)
                 self._stroke_items.append(dot)
             else:
                 line = gl.GLLinePlotItem(
-                    pos=dense, color=(0.12, 0.30, 0.78, 0.98), width=3.2, antialias=True
+                    pos=dense, color=(0.95, 0.44, 0.04, 0.98), width=3.2, antialias=True
                 )
                 self.addItem(line)
                 self._stroke_items.append(line)
@@ -268,7 +268,7 @@ class SphereCanvas3D(gl.GLViewWidget):
                     max_angle_step=0.04,
                 )
                 jump_dots = gl.GLScatterPlotItem(
-                    pos=arc_pts, color=(0.85, 0.46, 0.02, 0.90), size=4.0, pxMode=True
+                    pos=arc_pts, color=(0.55, 0.35, 0.15, 0.70), size=3.5, pxMode=True
                 )
                 self.addItem(jump_dots)
                 self._stroke_items.append(jump_dots)
@@ -289,12 +289,12 @@ class SphereCanvas3D(gl.GLViewWidget):
                 continue
             dense = _densify_spherical(p_stroke, radius=r_lift)
             line = gl.GLLinePlotItem(
-                pos=dense, color=(0.09, 0.64, 0.29, 0.80), width=2.4, antialias=True
+                pos=dense, color=(0.09, 0.64, 0.29, 0.45), width=2.0, antialias=True
             )
             norms = np.maximum(np.linalg.norm(p_stroke, axis=1, keepdims=True), 1e-12)
             lifted_nodes = p_stroke * (r_lift * 1.003 / norms)
             dots = gl.GLScatterPlotItem(
-                pos=lifted_nodes, color=(0.09, 0.64, 0.29, 0.95), size=4.5, pxMode=True
+                pos=lifted_nodes, color=(0.09, 0.64, 0.29, 0.95), size=5.0, pxMode=True
             )
             self.addItem(line)
             self.addItem(dots)

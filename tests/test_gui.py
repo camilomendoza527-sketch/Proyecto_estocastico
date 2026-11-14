@@ -182,3 +182,84 @@ def test_view3d_mouse_raycast_drawing_and_projection(app_window):
     assert len(canvas.strokes) == 0
     assert len(canvas.projected_strokes) == 0
     assert v3d.ranking_panel.lbl_top_char.text() == "—"
+
+
+def test_view2d_arbitrary_stroke_always_shows_statistical_ranking(app_window):
+    """Incluso un trazo irregular completo siempre muestra la estadística de las 27 letras."""
+    import numpy as np
+
+    win = app_window
+    win.show_2d()
+    v2d = win.view_2d
+
+    t_zz = np.linspace(0.0, 10.0 * np.pi, 180)
+    zz = [(float(300.0 + 8.0 * t), float(400.0 + 90.0 * np.sin(t))) for t in t_zz]
+    v2d.canvas.strokes = [zz]
+    v2d.canvas._current_stroke = None
+    v2d._evaluate_realtime()
+
+    assert v2d.ranking_panel.lbl_top_char.text() != "—"
+    assert "Reconociendo:" in v2d.ranking_panel.lbl_top_val.text()
+
+    v2d.btn_clear.click()
+
+
+def test_view2d_undo_button_and_live_telemetry_bar(app_window):
+    """El botón 'Deshacer trazo' elimina solo el último sub-trazo y la barra inferior muestra telemetría en vivo."""
+    win = app_window
+    win.show_2d()
+    v2d = win.view_2d
+
+    assert not hasattr(v2d, "btn_restart")
+    assert v2d.btn_undo.text() == "Deshacer trazo"
+    assert v2d.btn_clear.text() == "Limpiar lienzo"
+    assert v2d.lbl_obs.text() == v2d._IDLE_OBS_TEXT
+
+    stroke_1 = [(300.0, float(150 + 10 * i)) for i in range(21)]
+    stroke_2 = [(float(230 + 10 * i), 220.0) for i in range(15)]
+
+    v2d.canvas.strokes = [stroke_1]
+    v2d.canvas._current_stroke = None
+    v2d._evaluate_realtime()
+    obs_1 = v2d.lbl_obs.text()
+    assert "Sub-trazos: 1" in obs_1
+    assert "T = " in obs_1
+    assert "Proyección '" in obs_1
+    assert v2d.ranking_panel.lbl_top_char.text() != "—"
+
+    v2d.canvas.strokes.append(stroke_2)
+    v2d._evaluate_realtime()
+    obs_2 = v2d.lbl_obs.text()
+    assert "Sub-trazos: 2" in obs_2
+
+    v2d.btn_undo.click()
+    assert len(v2d.canvas.strokes) == 1
+    assert "Sub-trazos: 1" in v2d.lbl_obs.text()
+    assert v2d.ranking_panel.lbl_top_char.text() != "—"
+
+    v2d.btn_undo.click()
+    assert len(v2d.canvas.strokes) == 0
+    assert v2d.lbl_obs.text() == v2d._IDLE_OBS_TEXT
+    assert v2d.ranking_panel.lbl_top_char.text() == "—"
+
+
+def test_letter_guide_modal_trajectories_and_q_3_strokes(app_window):
+    """La guía refleja los modos reales del dataset (x abajo->arriba, k=2, p=2, a=2, g=2, q=3)."""
+    win = app_window
+    win.show_guia()
+    guide = win.view_guia
+
+    guide.select_letter("q")
+    assert len(guide.demo_canvas._strokes) == 3
+    assert "3 sub-trazos" in guide.lbl_info.text()
+    assert "3 (morado)" in guide.lbl_info.text()
+
+    guide.select_letter("x")
+    st_x = guide.demo_canvas._strokes
+    assert len(st_x) == 2
+    assert st_x[0][-1][0] - st_x[0][0][0] > 0.15 and st_x[0][-1][1] - st_x[0][0][1] > 0.15
+    assert st_x[1][-1][0] - st_x[1][0][0] > 0.15 and st_x[1][-1][1] - st_x[1][0][1] < -0.15
+
+    for ch, expected_n in (("a", 2), ("g", 2), ("k", 2), ("p", 2), ("o", 1)):
+        guide.select_letter(ch)
+        assert len(guide.demo_canvas._strokes) == expected_n
