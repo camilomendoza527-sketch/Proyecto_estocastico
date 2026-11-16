@@ -250,12 +250,18 @@ class View2D(QWidget):
         self.btn_undo.setStyleSheet(self._button_style())
         self.btn_undo.clicked.connect(self.undo_last_stroke)
 
+        self.btn_restart = QPushButton("Reiniciar captura")
+        self.btn_restart.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_restart.setStyleSheet(self._button_style())
+        self.btn_restart.clicked.connect(self.reset_capture)
+
         self.btn_clear = QPushButton("Limpiar lienzo")
         self.btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_clear.setStyleSheet(self._button_style())
         self.btn_clear.clicked.connect(self.reset_capture)
 
         top_bar.addWidget(self.btn_undo)
+        top_bar.addWidget(self.btn_restart)
         top_bar.addWidget(self.btn_clear)
         left_layout.addLayout(top_bar)
 
@@ -350,16 +356,17 @@ class View2D(QWidget):
             self.canvas.set_projected_strokes([])
 
         lx, ly = last_pt
-        k_dir = self.extractor.cfg.K
-        sym_tail = " ".join(
-            f"J{s - k_dir}" if self.extractor.is_jump(s) else f"d{s}"
-            for s in symbols[-5:]
-        )
-        if len(symbols) > 5:
+        sym_tail = " ".join(self.extractor.symbol_label(s) for s in symbols[-8:])
+        if len(symbols) > 8:
             sym_tail = "... " + sym_tail
+        n_st_model = self.classifier.models[top_letter].n_states if top_letter else 0
+        q_txt = f"q*={current_state}/{n_st_model}" if current_state is not None else "q*=-"
+        proj_head = " ".join(self.extractor.symbol_label(s) for s in future_symbols[:4])
+        if len(future_symbols) > 4:
+            proj_head += " ..."
         self.lbl_obs.setText(
             f"(x={lx:.0f}, y={ly:.0f}) | Sub-trazos: {len(raw_strokes)} | T = {len(symbols)} | "
-            f"Proyección '{top_letter or '-'}': {len(future_symbols)} pasos | {sym_tail}"
+            f"{q_txt} | O: [{sym_tail}] | Proyección '{top_letter or '-'}': {len(future_symbols)} pasos [{proj_head}]"
         )
 
         self.ranking_panel.update_probabilities(

@@ -210,7 +210,7 @@ def test_view2d_undo_button_and_live_telemetry_bar(app_window):
     win.show_2d()
     v2d = win.view_2d
 
-    assert not hasattr(v2d, "btn_restart")
+    assert v2d.btn_restart.text() == "Reiniciar captura"
     assert v2d.btn_undo.text() == "Deshacer trazo"
     assert v2d.btn_clear.text() == "Limpiar lienzo"
     assert v2d.lbl_obs.text() == v2d._IDLE_OBS_TEXT
@@ -224,6 +224,7 @@ def test_view2d_undo_button_and_live_telemetry_bar(app_window):
     obs_1 = v2d.lbl_obs.text()
     assert "Sub-trazos: 1" in obs_1
     assert "T = " in obs_1
+    assert "q*=" in obs_1
     assert "Proyección '" in obs_1
     assert v2d.ranking_panel.lbl_top_char.text() != "—"
 

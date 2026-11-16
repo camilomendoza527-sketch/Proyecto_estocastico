@@ -538,8 +538,15 @@ class View3D(QWidget):
         last_sph = res.spherical_strokes[-1][-1]
         theta_deg = float(np.rad2deg(last_sph[0]))
         phi_deg = float(np.rad2deg(last_sph[1]))
-        sym_txt = " ".join(self.extractor.symbol_label(s) for s in symbols[-14:])
+        sym_txt = " ".join(self.extractor.symbol_label(s) for s in symbols[-8:])
+        if len(symbols) > 8:
+            sym_txt = "... " + sym_txt
+        n_st_model = self.classifier.models[top_letter].n_states if top_letter else 0
+        q_txt = f"q*={current_state}/{n_st_model}" if current_state is not None else "q*=-"
+        proj_head = " ".join(self.extractor.symbol_label(s) for s in future_symbols[:4])
+        if len(future_symbols) > 4:
+            proj_head += " ..."
         self.lbl_obs.setText(
-            f"(θ={theta_deg:5.1f}°, φ={phi_deg:5.1f}°)  |  Sub-trazos: {len(strokes)}  |  "
-            f"T = {len(symbols)}  |  Proyección '{top_letter}': {len(future_symbols)} pasos  |  {sym_txt}"
+            f"(θ={theta_deg:5.1f}°, φ={phi_deg:5.1f}°) | Sub-trazos: {len(strokes)} | "
+            f"T = {len(symbols)} | {q_txt} | O: [{sym_txt}] | Proyección '{top_letter}': {len(future_symbols)} pasos [{proj_head}]"
         )
