@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import get_config
-from gui.RankingPanel import load_canonical_glyphs
+from gui.RankingPanel import build_handwritten_glyph_pixmap, load_canonical_glyphs
 
 STROKE_COLORS = ("#0f766e", "#d97706", "#7c3aed")
 
@@ -245,6 +245,8 @@ class LetterGuideView(QWidget):
         self.cfg = get_config()
         self.current_letter: str = "a"
         self._buttons: dict[str, QPushButton] = {}
+        self._icons_normal: dict[str, QIcon] = {}
+        self._icons_selected: dict[str, QIcon] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 22, 28, 22)
@@ -280,13 +282,22 @@ class LetterGuideView(QWidget):
         self.btn_clear.clicked.connect(lambda: self.demo_canvas.clear_user_strokes())
         root.addLayout(top_bar)
 
-        # Selector de las 27 letras
+        # Selector de las 27 letras (con glifo manuscrito en lugar de tipografía de teclado)
         grid = QGridLayout()
         grid.setSpacing(6)
         for i, ch in enumerate(self.cfg.letters):
-            btn = QPushButton(ch)
+            self._icons_normal[ch] = QIcon(
+                build_handwritten_glyph_pixmap(ch, QColor("#334155"), w=22, h=26)
+            )
+            self._icons_selected[ch] = QIcon(
+                build_handwritten_glyph_pixmap(ch, QColor("#ffffff"), w=22, h=26)
+            )
+            btn = QPushButton()
+            btn.setToolTip(f"Letra {ch}")
+            btn.setIcon(self._icons_normal[ch])
+            btn.setIconSize(QSize(22, 26))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setFixedHeight(34)
+            btn.setFixedHeight(36)
             btn.clicked.connect(lambda _=False, c=ch: self.select_letter(c))
             self._buttons[ch] = btn
             grid.addWidget(btn, i // 14, i % 14)
@@ -324,14 +335,16 @@ class LetterGuideView(QWidget):
 
         for ch, btn in self._buttons.items():
             if ch == letter:
+                btn.setIcon(self._icons_selected[ch])
                 btn.setStyleSheet(
                     "QPushButton { background: #0f766e; color: #ffffff; font-weight: 700; "
-                    "border: 1px solid #0f766e; border-radius: 6px; font-size: 13px; }"
+                    "border: 1px solid #0f766e; border-radius: 6px; }"
                 )
             else:
+                btn.setIcon(self._icons_normal[ch])
                 btn.setStyleSheet(
                     "QPushButton { background: #ffffff; color: #334155; font-weight: 600; "
-                    "border: 1px solid #e2e8f0; border-radius: 6px; font-size: 13px; } "
+                    "border: 1px solid #e2e8f0; border-radius: 6px; } "
                     "QPushButton:hover { background: #f1f5f9; }"
                 )
 
