@@ -557,6 +557,83 @@ class FeatureExtractor3D(FeatureExtractor):
         return [result.to_world_coords(np.vstack(seg)) for seg in cam_strokes if len(seg) >= 2]
 
     @staticmethod
+    def slerp_arc(
+        p0: np.ndarray, p1: np.ndarray, radius: float, max_angle_step: float = 0.02
+    ) -> np.ndarray:
+        """Interpolación geodésica esférica (SLERP) entre dos puntos p0 y p1 sobre S²."""
+        u0 = np.asarray(p0, dtype=float)
+        u1 = np.asarray(p1, dtype=float)
+        n0 = np.linalg.norm(u0)
+        n1 = np.linalg.norm(u1)
+        if n0 < 1e-12 or n1 < 1e-12:
+            return np.vstack([u0, u1])
+        u0 = u0 / n0
+        u1 = u1 / n1
+
+        dot = float(np.clip(np.dot(u0, u1), -1.0, 1.0))
+        omega = float(np.arccos(dot))
+        if omega < 1e-5:
+            return np.vstack([radius * u0, radius * u1])
+
+        n_steps = max(2, int(np.ceil(omega / max_angle_step)) + 1)
+        t = np.linspace(0.0, 1.0, n_steps)[:, None]
+        sin_omega = np.sin(omega)
+        if sin_omega < 1e-6:
+            pts = (1.0 - t) * u0 + t * u1
+            pts /= np.maximum(np.linalg.norm(pts, axis=1, keepdims=True), 1e-12)
+            return radius * pts
+
+        w0 = np.sin((1.0 - t) * omega) / sin_omega
+        w1 = np.sin(t * omega) / sin_omega
+        return radius * (w0 * u0 + w1 * u1)
+
+    @classmethod
+    def densify_spherical(
+        cls, pts_3d: np.ndarray, radius: float, max_angle_step: float = 0.015
+    ) -> np.ndarray:
+        """Densifica una polilínea sobre S² siguiendo arcos geodésicos SLERP."""
+        arr = np.asarray(pts_3d, dtype=float)
+        if len(arr) == 0:
+            return np.empty((0, 3))
+        if len(arr) == 1:
+            n = max(float(np.linalg.norm(arr[0])), 1e-12)
+            return (radius / n) * arr
+        segments: list[np.ndarray] = []
+        for i in range(len(arr) - 1):
+            arc = cls.slerp_arc(arr[i], arr[i + 1], radius=radius, max_angle_step=max_angle_step)
+            segments.append(arc if i == 0 else arc[1:])
+        return np.vstack(segments)
+
+    def build_guide_frame_curves(
+        self,
+        camera_rotation: CameraOrientation,
+        radius: float,
+        half_span_deg: float = 30.0,
+    ) -> list[np.ndarray]:
+        """Construye las curvas 3D del recuadro guía ecuatorial centrado en la vista de cámara."""
+        R_inv = self.build_camera_matrix(camera_rotation).T
+        r_lift = radius * 1.003
+        hs = np.deg2rad(half_span_deg)
+        t = np.linspace(-hs, hs, 48)
+        z = np.zeros_like(t)
+        f = np.full_like(t, hs)
+
+        local_specs = [
+            (np.pi / 2.0 - f, t),
+            (np.pi / 2.0 + f, t),
+            (np.pi / 2.0 + t, -f),
+            (np.pi / 2.0 + t, f),
+            (np.pi / 2.0 + z, t),
+            (np.pi / 2.0 + t, z),
+        ]
+        curves: list[np.ndarray] = []
+        for th, ph in local_specs:
+            sph = np.column_stack([th, ph])
+            pts_std = r_lift * self.spherical_to_cartesian(sph)
+            curves.append(pts_std @ R_inv.T)
+        return curves
+
+    @staticmethod
     def intersect_ray_sphere(
         ray_origin: np.ndarray, ray_dir: np.ndarray, radius: float = 1.0
     ) -> np.ndarray | None:

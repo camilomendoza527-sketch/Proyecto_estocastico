@@ -23,84 +23,6 @@ from core.HMMEngine import HMMClassifier
 from gui.RankingPanel import RankingPanel
 
 
-def _slerp_arc(
-    p0: np.ndarray, p1: np.ndarray, radius: float, max_angle_step: float = 0.02
-) -> np.ndarray:
-    """Interpolación geodésica esférica (SLERP) entre dos puntos p0 y p1 sobre S²."""
-    u0 = np.asarray(p0, dtype=float)
-    u1 = np.asarray(p1, dtype=float)
-    n0 = np.linalg.norm(u0)
-    n1 = np.linalg.norm(u1)
-    if n0 < 1e-12 or n1 < 1e-12:
-        return np.vstack([u0, u1])
-    u0 = u0 / n0
-    u1 = u1 / n1
-
-    dot = float(np.clip(np.dot(u0, u1), -1.0, 1.0))
-    omega = float(np.arccos(dot))
-    if omega < 1e-5:
-        return np.vstack([radius * u0, radius * u1])
-
-    n_steps = max(2, int(np.ceil(omega / max_angle_step)) + 1)
-    t = np.linspace(0.0, 1.0, n_steps)[:, None]
-    sin_omega = np.sin(omega)
-    if sin_omega < 1e-6:
-        pts = (1.0 - t) * u0 + t * u1
-        pts /= np.maximum(np.linalg.norm(pts, axis=1, keepdims=True), 1e-12)
-        return radius * pts
-
-    w0 = np.sin((1.0 - t) * omega) / sin_omega
-    w1 = np.sin(t * omega) / sin_omega
-    return radius * (w0 * u0 + w1 * u1)
-
-
-def _densify_spherical(
-    pts_3d: np.ndarray, radius: float, max_angle_step: float = 0.015
-) -> np.ndarray:
-    """Densifica una polilínea sobre S² siguiendo arcos geodésicos SLERP."""
-    arr = np.asarray(pts_3d, dtype=float)
-    if len(arr) == 0:
-        return np.empty((0, 3))
-    if len(arr) == 1:
-        n = max(float(np.linalg.norm(arr[0])), 1e-12)
-        return (radius / n) * arr
-    segments: list[np.ndarray] = []
-    for i in range(len(arr) - 1):
-        arc = _slerp_arc(arr[i], arr[i + 1], radius=radius, max_angle_step=max_angle_step)
-        segments.append(arc if i == 0 else arc[1:])
-    return np.vstack(segments)
-
-
-def _build_guide_frame_curves(
-    extractor: FeatureExtractor3D,
-    camera_rotation: tuple[float, float],
-    radius: float,
-    half_span_deg: float = 30.0,
-) -> list[np.ndarray]:
-    """Construye las curvas 3D del recuadro guía ecuatorial centrado en la vista de cámara."""
-    R_inv = extractor.build_camera_matrix(camera_rotation).T
-    r_lift = radius * 1.003
-    hs = np.deg2rad(half_span_deg)
-    t = np.linspace(-hs, hs, 48)
-    z = np.zeros_like(t)
-    f = np.full_like(t, hs)
-
-    local_specs = [
-        (np.pi / 2.0 - f, t),
-        (np.pi / 2.0 + f, t),
-        (np.pi / 2.0 + t, -f),
-        (np.pi / 2.0 + t, f),
-        (np.pi / 2.0 + z, t),
-        (np.pi / 2.0 + t, z),
-    ]
-    curves: list[np.ndarray] = []
-    for th, ph in local_specs:
-        sph = np.column_stack([th, ph])
-        pts_std = r_lift * extractor.spherical_to_cartesian(sph)
-        curves.append(pts_std @ R_inv.T)
-    return curves
-
-
 class SphereCanvas3D(gl.GLViewWidget):
     """Lienzo interactivo 3D sobre una esfera con trazado por ray-casting y proyección geodésica."""
 
@@ -179,7 +101,7 @@ class SphereCanvas3D(gl.GLViewWidget):
             self.removeItem(item)
         self._guide_items.clear()
 
-        curves = _build_guide_frame_curves(self.extractor, cam_orient, self.radius)
+        curves = self.extractor.build_guide_frame_curves(cam_orient, self.radius)
         for idx, curve in enumerate(curves):
             is_border = idx < 4
             color = (0.94, 0.45, 0.05, 0.88) if is_border else (0.94, 0.55, 0.18, 0.42)
@@ -246,7 +168,7 @@ class SphereCanvas3D(gl.GLViewWidget):
             if not stroke_pts:
                 continue
             raw_pts = np.vstack(stroke_pts)
-            dense = _densify_spherical(raw_pts, radius=r_lift)
+            dense = self.extractor.densify_spherical(raw_pts, radius=r_lift)
             if len(dense) == 1:
                 dot = gl.GLScatterPlotItem(
                     pos=dense, color=(0.95, 0.44, 0.04, 1.0), size=5.5, pxMode=True
@@ -261,7 +183,7 @@ class SphereCanvas3D(gl.GLViewWidget):
                 self._stroke_items.append(line)
 
             if idx > 0 and self.strokes[idx - 1]:
-                arc_pts = _slerp_arc(
+                arc_pts = self.extractor.slerp_arc(
                     self.strokes[idx - 1][-1],
                     stroke_pts[0],
                     radius=r_lift * 1.003,
@@ -287,7 +209,7 @@ class SphereCanvas3D(gl.GLViewWidget):
         for p_stroke in self.projected_strokes:
             if len(p_stroke) < 2:
                 continue
-            dense = _densify_spherical(p_stroke, radius=r_lift)
+            dense = self.extractor.densify_spherical(p_stroke, radius=r_lift)
             line = gl.GLLinePlotItem(
                 pos=dense, color=(0.09, 0.64, 0.29, 0.45), width=2.0, antialias=True
             )
@@ -526,10 +448,12 @@ class View3D(QWidget):
             top_model = self.classifier.models[top_letter]
             if current_state >= top_model.n_states - 1 and len(symbols) >= 0.75 * top_model.expected_length:
                 future_symbols = future_symbols[:1]
+        n_st_model = self.classifier.models[top_letter].n_states if top_letter else 0
         self.ranking_panel.update_probabilities(
             ranking=ranking,
             viterbi_state=current_state,
             n_obs=len(symbols),
+            n_states=n_st_model,
         )
 
         projected_3d = self.extractor.reconstruct_projected_strokes(res, future_symbols)
@@ -541,7 +465,6 @@ class View3D(QWidget):
         sym_txt = " ".join(self.extractor.symbol_label(s) for s in symbols[-8:])
         if len(symbols) > 8:
             sym_txt = "... " + sym_txt
-        n_st_model = self.classifier.models[top_letter].n_states if top_letter else 0
         q_txt = f"q*={current_state}/{n_st_model}" if current_state is not None else "q*=-"
         proj_head = " ".join(self.extractor.symbol_label(s) for s in future_symbols[:4])
         if len(future_symbols) > 4:

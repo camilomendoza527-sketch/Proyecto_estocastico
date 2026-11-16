@@ -250,6 +250,7 @@ class RankingPanel(QFrame):
         ranking: Sequence[tuple],
         viterbi_state: int | None = None,
         n_obs: int = 0,
+        n_states: int | None = None,
     ) -> None:
         """Actualiza las probabilidades estadísticas y reordena las 27 letras."""
         if not ranking or n_obs <= 0:
@@ -261,7 +262,12 @@ class RankingPanel(QFrame):
         pct = top_prob * 100.0
 
         self.lbl_top_char.setText(top_char)
-        self.lbl_top_val.setText(f"Reconociendo: {pct:.1f}%")
+        if viterbi_state is not None and n_states is not None and n_states > 0:
+            self.lbl_top_val.setText(f"Reconociendo: {pct:.1f}%  (q* = {viterbi_state}/{n_states})")
+        elif viterbi_state is not None:
+            self.lbl_top_val.setText(f"Reconociendo: {pct:.1f}%  (q* = {viterbi_state})")
+        else:
+            self.lbl_top_val.setText(f"Reconociendo: {pct:.1f}%")
         self.lbl_top_val.setStyleSheet(
             "font-size: 14px; font-weight: 700; color: #0f766e; padding-left: 4px;"
         )

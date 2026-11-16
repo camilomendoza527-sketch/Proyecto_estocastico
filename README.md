@@ -20,7 +20,7 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\pytest.exe -q
 ```
 
-### Scripts Offline de Entrenamiento, Evaluación y Captura
+### Scripts Offline de Entrenamiento y Evaluación
 *(Independientes de la GUI principal, cumpliendo SPEC §4.1)*:
 
 ```powershell
@@ -29,9 +29,6 @@ py -3.12 -m venv .venv
 
 # Evaluar accuracy Top-1 / Top-3 en prefijos (30%, 50%, 70%, 100%) y comparar K=8 vs K=16
 .\.venv\Scripts\python.exe -m training.evaluate
-
-# Herramienta opcional de captura de muestras 2D a mano alzada
-.\.venv\Scripts\python.exe -m training.capture_tool
 ```
 
 ---
@@ -42,18 +39,18 @@ py -3.12 -m venv .venv
 config/config.toml         Única fuente de configuración: alfabeto (27 letras), K, estados N por letra
 core/config.py             Cargador y validador de config/config.toml
 core/HMMEngine.py          Motor matemático HMM puro en NumPy (Forward escalado, Backward, Viterbi log,
-                           Baum-Welch multisequencia, proyección futura y clasificador Bayesiano)
-core/topology.py           Inicialización Bakis izquierda-derecha y alineación segmentaria uniforme
+                           Baum-Welch multisequencia, topología Bakis, proyección futura y clasificador)
 core/FeatureExtractor.py   Geometría y discretización 2D y 3D sobre la esfera (sin lógica HMM)
 main.py                    Punto de entrada de la GUI; solo carga models/*.json (nunca entrena)
 gui/MainMenu.py            Ventana A: Menú Principal de Inicio institucional
 gui/View2D.py              Ventana B: Reconocedor y Visualizador 2D con proyección punteada
 gui/View3D.py              Ventana C: Reconocedor y Visualizador 3D sobre esfera interactiva OpenGL
+gui/LetterGuide.py         Vista interactiva de Guía de Letras con recorrido animado y práctica
 gui/RankingPanel.py        Panel lateral derecho con ranking en tiempo real P(c | O_{1:t}) e iconos
-training/                  Scripts offline: augment.py, train.py, evaluate.py, capture_tool.py
+training/                  Scripts offline: augment.py, train.py, evaluate.py
 models/                    54 modelos entrenados: 2d_<letra>.json (27) y 3d_<letra>.json (27)
 docs/ecuaciones.md         Guía paso a paso con todas las ecuaciones y demostraciones para el tablero
-tests/                     Pruebas automatizadas (38 tests: extractor 2D/3D, motor HMM, pipeline y GUI)
+tests/                     Pruebas automatizadas (39 tests: extractor 2D/3D, motor HMM, pipeline y GUI)
 ```
 
 ---

@@ -373,4 +373,5 @@ class View2D(QWidget):
             ranking=ranking,
             viterbi_state=current_state,
             n_obs=len(symbols),
+            n_states=n_st_model,
         )
